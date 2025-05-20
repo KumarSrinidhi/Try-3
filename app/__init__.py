@@ -46,12 +46,14 @@ def create_app(config_class=Config):
     from app.auth import auth_bp
     from app.admin_routes import admin_bp  # Import admin_bp first
     from app.routes import main_bp, teacher_bp, student_bp
+    from app.group_routes import group_bp
     
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
     app.register_blueprint(teacher_bp)
     app.register_blueprint(student_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(group_bp)
     
     # Error handlers
     @app.errorhandler(404)

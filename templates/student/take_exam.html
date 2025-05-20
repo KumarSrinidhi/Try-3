@@ -1,4 +1,4 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
 
 {% block title %}Take Exam - {{ exam.title }}{% endblock %}
 
@@ -236,6 +236,22 @@
     @keyframes spin {
         to { transform: rotate(360deg); }
     }
+    
+    /* Fullscreen warning */
+    .fullscreen-warning {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(220, 53, 69, 0.95);
+        color: white;
+        padding: 2rem;
+        border-radius: 8px;
+        text-align: center;
+        z-index: 10000;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        max-width: 400px;
+    }
 </style>
 {% endblock %}
 
@@ -365,302 +381,231 @@
             </div>
         </div>
     </div>
+
+    <!-- Error modal -->
+    <div class="modal fade" id="errorModal" tabindex="-1" aria-labelledby="errorModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="errorModalLabel">
+                        <i class="fas fa-exclamation-circle text-danger me-2"></i>
+                        Error
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="errorMessage" class="mb-0"></p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <i class="fas fa-times"></i> Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    // Enhanced exam state management
-    const examState = {
-        submitted: false,
-        timeIsUp: false,
-        autoSaving: false,
-        submissionInProgress: false,
-        autoSaveDebounceTimer: null,
-        serverTimeOffset: 0,
-        lastSyncTime: Date.now(),
-        autoSaveRetryCount: 0,
-        maxAutoSaveRetries: 3
-    };
+    const startTime = new Date('{{ attempt.started_at.isoformat() }}Z');
+    const durationMinutes = {{ exam.duration }};
+    const examForm = document.getElementById('examForm');
+    const lastSavedSpan = document.getElementById('lastSaved');
+    const leaveExamBtn = document.getElementById('leaveExamBtn');
+    const leaveExamModal = new bootstrap.Modal(document.getElementById('leaveExamModal'));
+    const errorModal = new bootstrap.Modal(document.getElementById('errorModal'));
+    const errorMessage = document.getElementById('errorMessage');
+    const retryButton = document.getElementById('retryAction');
+    let autoSaveTimeout;
+    let isSubmitting = false;
+    let lastSavedSuccessfully = true;
 
-    // Server time synchronization
-    async function syncWithServerTime() {
-        try {
-            const response = await fetch('/get_server_time');
-            if (response.ok) {
-                const serverTime = new Date(await response.text());
-                examState.serverTimeOffset = serverTime.getTime() - Date.now();
-                examState.lastSyncTime = Date.now();
-                return true;
+    // Timer function
+    function updateTimer() {
+        const now = new Date();
+        const endTime = new Date(startTime.getTime() + (durationMinutes * 60 * 1000));
+        const timeLeft = endTime - now;
+
+        if (timeLeft <= 0) {
+            document.getElementById('timer').textContent = 'Time Expired!';
+            if (!isSubmitting) {
+                isSubmitting = true;
+                submitExam(true);
             }
-        } catch (error) {
-            console.error('Time sync error:', error);
-        }
-        return false;
-    }
-
-    // Initialize exam timer with server time sync
-    const serverStartTime = new Date("{{ attempt.started_at.isoformat() }}");
-    const clientStartTime = new Date();
-    examState.serverTimeOffset = serverStartTime.getTime() - clientStartTime.getTime();
-    
-    const timeLimit = Number("{{ exam.time_limit_minutes }}") * 60 * 1000; // convert to milliseconds
-    const endTime = new Date(serverStartTime.getTime() + timeLimit);
-    let timeoutId = null;
-
-    // Timer update function with server time sync
-    async function updateCountdown() {
-        // Re-sync with server every 5 minutes to prevent drift
-        if (Date.now() - examState.lastSyncTime > 300000) {
-            await syncWithServerTime();
-        }
-
-        const now = new Date(Date.now() + examState.serverTimeOffset);
-        const timeDiff = endTime - now;
-        
-        if (timeDiff <= 0) {
-            if (examState.timeIsUp || examState.submitted || examState.submissionInProgress) {
-                document.getElementById('countdown').textContent = "00:00:00";
-                return;
-            }
-
-            examState.timeIsUp = true;
-            examState.submissionInProgress = true;
-            
-            const timerDisplay = document.getElementById('countdown');
-            timerDisplay.textContent = "00:00:00";
-            timerDisplay.classList.add('text-danger');
-            
-            // Show time's up message
-            const timeUpAlert = document.createElement('div');
-            timeUpAlert.className = 'alert alert-danger text-center mt-3 fixed-top';
-            timeUpAlert.innerHTML = '<i class="fas fa-clock"></i> Time\'s up! Your exam is being submitted automatically...';
-            document.body.insertBefore(timeUpAlert, document.body.firstChild);
-            
-            clearAllIntervals();
-            await submitExam(true);
-            
-            // Disable all form inputs
-            const form = document.getElementById('examForm');
-            form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
-            return;
-        }
-        
-        // Update timer display
-        const hours = Math.floor(timeDiff / (1000 * 60 * 60));
-        const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
-        const seconds = Math.floor((timeDiff % (1000 * 60)) / 1000);
-        
-        const display = document.getElementById('countdown');
-        display.textContent = [
-            hours.toString().padStart(2, '0'),
-            minutes.toString().padStart(2, '0'),
-            seconds.toString().padStart(2, '0')
-        ].join(':');
-        
-        // Update timer styling based on remaining time
-        const timerCard = document.getElementById('timer');
-        if (timeDiff < 5 * 60 * 1000) { // less than 5 minutes
-            timerCard.className = 'card shadow-sm mb-0 danger';
-            display.className = 'mb-0 text-danger fw-bold';
-        } else if (timeDiff < 15 * 60 * 1000) { // less than 15 minutes
-            timerCard.className = 'card shadow-sm mb-0 warning';
-            display.className = 'mb-0 text-warning';
-        }
-    }
-
-    // Improved auto-save implementation
-    async function autoSaveAnswers() {
-        if (examState.submitted || examState.timeIsUp || examState.submissionInProgress || examState.autoSaving) {
             return;
         }
 
-        if (examState.autoSaveDebounceTimer) {
-            clearTimeout(examState.autoSaveDebounceTimer);
-        }
-
-        examState.autoSaveDebounceTimer = setTimeout(async () => {
-            examState.autoSaving = true;
-            const saveBtn = document.getElementById('save-progress-btn');
-            const originalBtnText = saveBtn.innerHTML;
-            saveBtn.innerHTML = '<div class="loading-spinner"></div> Saving...';
-            saveBtn.disabled = true;
-
-            try {
-                const form = document.getElementById('examForm');
-                const formData = new FormData(form);
-                formData.append('save_answers', 'true');
-
-                const response = await fetch(form.action, {
-                    method: 'POST',                    body: formData,
-                    headers: {
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-CSRF-Token': formData.get('csrf_token')
-                    }
-                });
-                
-                if (response.ok) {
-                    saveBtn.classList.remove('btn-outline-secondary', 'btn-danger');
-                    saveBtn.classList.add('btn-success');
-                    saveBtn.innerHTML = '<i class="fas fa-check"></i> Saved';
-                    examState.autoSaveRetryCount = 0;
-                    
-                    setTimeout(() => {
-                        if (!examState.submitted && !examState.timeIsUp) {
-                            saveBtn.classList.remove('btn-success');
-                            saveBtn.classList.add('btn-outline-secondary');
-                            saveBtn.innerHTML = originalBtnText;
-                            saveBtn.disabled = false;
-                        }
-                    }, 2000);
-
-                    console.log('Answers auto-saved at ' + new Date().toLocaleTimeString());
-                } else {
-                    throw new Error('Save failed');
-                }
-            } catch (error) {
-                console.error('Error auto-saving answers:', error);
-                saveBtn.classList.remove('btn-outline-secondary', 'btn-success');
-                saveBtn.classList.add('btn-danger');
-                saveBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Save Failed';
-                
-                // Implement retry logic
-                if (examState.autoSaveRetryCount < examState.maxAutoSaveRetries) {
-                    examState.autoSaveRetryCount++;
-                    setTimeout(autoSaveAnswers, 5000); // Retry after 5 seconds
-                } else {
-                    // Show error toast
-                    const toast = document.createElement('div');
-                    toast.className = 'alert alert-danger position-fixed bottom-0 end-0 m-3';
-                    toast.innerHTML = `
-                        <i class="fas fa-exclamation-circle"></i>
-                        Unable to save your answers. Please check your connection and try again.
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    `;
-                    document.body.appendChild(toast);
-                    setTimeout(() => toast.remove(), 5000);
-                }
-            } finally {
-                examState.autoSaving = false;
-            }
-        }, 1000);
+        const minutes = Math.floor(timeLeft / 60000);
+        const seconds = Math.floor((timeLeft % 60000) / 1000);
+        document.getElementById('timer').textContent = 
+            `Time Left: ${minutes}:${seconds.toString().padStart(2, '0')}`;
     }
 
-    // Enhanced exam submission with retries
-    async function submitExam(isAutoSubmit = false) {
-        if (examState.submitted || examState.submissionInProgress) {
+    // Start timer
+    updateTimer();
+    const timerInterval = setInterval(updateTimer, 1000);
+
+    // Auto-save function with retry mechanism
+    async function saveAnswers(retryCount = 0) {
+        if (retryCount > 3) {
+            lastSavedSuccessfully = false;
+            showError('Failed to save answers after multiple attempts. Please check your connection.');
             return;
         }
-
-        if (!isAutoSubmit) {
-            if (!confirm('Are you sure you want to submit your exam? You cannot make changes after submission.')) {
-                return;
-            }
-        }
-
-        examState.submissionInProgress = true;
-        const submitBtn = document.getElementById('submit-exam-btn');
-        const originalBtnText = submitBtn.innerHTML;
-        submitBtn.innerHTML = '<div class="loading-spinner"></div> Submitting...';
-        submitBtn.disabled = true;
 
         try {
-            // Add hidden submit field
-            const form = document.getElementById('examForm');
-            let submitInput = form.querySelector('input[name="submit_exam"]');
-            if (!submitInput) {
-                submitInput = document.createElement('input');
-                submitInput.type = 'hidden';
-                submitInput.name = 'submit_exam';
-                submitInput.value = '1';
-                form.appendChild(submitInput);
-            }
-
-            clearAllIntervals();            const formData = new FormData(form);
-            const response = await fetch(form.action, {
+            const formData = new FormData(examForm);
+            const response = await fetch(window.location.href, {
                 method: 'POST',
-                body: formData,
                 headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'X-CSRF-Token': formData.get('csrf_token')
-                }
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: formData
             });
 
-            if (response.ok) {
-                examState.submitted = true;
-                const result = await response.json();
-                window.location.href = result.redirect_url || '/dashboard';
+            const data = await response.json();
+            
+            if (data.success) {
+                lastSavedSuccessfully = true;
+                lastSavedSpan.textContent = 'Last saved: ' + new Date().toLocaleTimeString();
+                lastSavedSpan.classList.remove('text-danger');
+                lastSavedSpan.classList.add('text-muted');
+            } else if (data.redirect_url) {
+                window.location.href = data.redirect_url;
             } else {
-                throw new Error('Submission failed');
+                throw new Error(data.message || 'Error saving answers');
             }
-
         } catch (error) {
-            console.error('Error submitting exam:', error);
-            submitBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Submission Failed';
-            submitBtn.classList.remove('btn-primary');
-            submitBtn.classList.add('btn-danger');
+            console.error('Save error:', error);
+            lastSavedSuccessfully = false;
+            lastSavedSpan.textContent = 'Failed to save! Retrying...';
+            lastSavedSpan.classList.remove('text-muted');
+            lastSavedSpan.classList.add('text-danger');
             
-            // Show error alert
-            const alert = document.createElement('div');
-            alert.className = 'alert alert-danger position-fixed top-50 start-50 translate-middle';
-            alert.innerHTML = `
-                <h4 class="alert-heading">Submission Failed</h4>
-                <p>We couldn't submit your exam. Don't worry, your answers are saved.</p>
-                <hr>
-                <button class="btn btn-danger" onclick="submitExam(${isAutoSubmit})">
-                    <i class="fas fa-sync-alt"></i> Try Again
-                </button>
-            `;
-            document.body.appendChild(alert);
-            
-            examState.submissionInProgress = false;
-            submitBtn.disabled = false;
+            // Retry after a delay
+            setTimeout(() => saveAnswers(retryCount + 1), 2000);
         }
     }
 
-    // Helper function to clear all intervals
-    function clearAllIntervals() {
-        if (timeoutId) {
-            clearInterval(timeoutId);
-            timeoutId = null;
+    // Setup auto-save with throttling
+    function setupAutoSave() {
+        let saveTimeout;
+        const inputs = document.querySelectorAll('.answer-input');
+        
+        function triggerSave() {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(saveAnswers, 2000); // Wait 2 seconds after last change
         }
-        if (window.autoSaveInterval) {
-            clearInterval(window.autoSaveInterval);
-            window.autoSaveInterval = null;
+
+        inputs.forEach(input => {
+            input.addEventListener('change', triggerSave);
+            if (input.tagName === 'TEXTAREA') {
+                input.addEventListener('input', triggerSave);
+            }
+        });
+    }
+
+    // Show error modal with retry option
+    function showError(message, canRetry = false) {
+        errorMessage.textContent = message;
+        retryButton.style.display = canRetry ? 'block' : 'none';
+        errorModal.show();
+    }
+
+    // Handle exam submission with retry mechanism
+    async function submitExam(isAutoSubmit = false) {
+        if (!lastSavedSuccessfully) {
+            const shouldProceed = confirm('Some answers may not be saved. Do you want to proceed with submission anyway?');
+            if (!shouldProceed) return;
+        }
+
+        try {
+            const formData = new FormData(examForm);
+            formData.append('submit_exam', '1');
+
+            const response = await fetch(window.location.href, {
+                method: 'POST',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: formData
+            });
+
+            const data = await response.json();
+            
+            if (data.success) {
+                if (isAutoSubmit) {
+                    alert('Time is up! Your exam has been submitted.');
+                }
+                window.location.href = data.redirect_url;
+            } else if (data.redirect_url) {
+                window.location.href = data.redirect_url;
+            } else {
+                throw new Error(data.message || 'Submission failed');
+            }
+        } catch (error) {
+            console.error('Submission error:', error);
+            showError('Failed to submit exam. Your answers are saved. Would you like to try again?', true);
         }
     }
 
-    // Set up event handlers
-    const saveBtn = document.getElementById('save-progress-btn');
-    const submitBtn = document.getElementById('submit-exam-btn');
-    const formInputs = document.querySelectorAll('#examForm input, #examForm textarea, #examForm select');
+    // Handle leave exam functionality
+    async function handleLeave() {
+        try {
+            // Save answers one last time before leaving
+            await saveAnswers();
+            window.location.href = '{{ url_for("main.dashboard") }}';
+        } catch (error) {
+            showError('Failed to save answers before leaving. Would you like to try again?', true);
+        }
+    }
+
+    // Setup form submission
+    examForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        if (!isSubmitting) {
+            isSubmitting = true;
+            submitExam();
+        }
+    });
+
+    // Setup leave exam button
+    leaveExamBtn.addEventListener('click', function() {
+        leaveExamModal.show();
+    });
+
+    // Setup confirm leave button
+    document.getElementById('confirmLeave').addEventListener('click', async function() {
+        leaveExamModal.hide();
+        await handleLeave();
+    });
+
+    // Setup retry button
+    retryButton.addEventListener('click', function() {
+        errorModal.hide();
+        if (isSubmitting) {
+            submitExam();
+        } else {
+            saveAnswers();
+        }
+    });
+
+    // Initialize auto-save
+    setupAutoSave();
     
-    saveBtn.addEventListener('click', autoSaveAnswers);
-    submitBtn.addEventListener('click', () => submitExam(false));
-    formInputs.forEach(input => input.addEventListener('input', autoSaveAnswers));
+    // Save answers immediately on page load
+    saveAnswers();
 
-    // Start timer and auto-save
-    updateCountdown();
-    timeoutId = setInterval(updateCountdown, 1000);
-    window.autoSaveInterval = setInterval(autoSaveAnswers, 30000);
-
-    // Anti-copy paste implementation
-    document.addEventListener('copy', e => {
-        if (document.querySelector('.no-copy')) e.preventDefault();
-    });
-    document.addEventListener('paste', e => {
-        if (document.querySelector('.no-copy')) e.preventDefault();
-    });
-    document.addEventListener('cut', e => {
-        if (document.querySelector('.no-copy')) e.preventDefault();
-    });
-
-    // Handle beforeunload event
-    window.addEventListener('beforeunload', (e) => {
-        if (!examState.submitted && !examState.timeIsUp && !examState.submissionInProgress) {
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', function(e) {
+        clearInterval(timerInterval);
+        if (!lastSavedSuccessfully) {
             e.preventDefault();
             e.returnValue = '';
+            return '';
         }
     });
 });

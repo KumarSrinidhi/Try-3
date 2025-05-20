@@ -13,9 +13,21 @@
 <div class="row mt-3">
     <div class="col-md-8">
         <div class="card shadow-sm">
-            <div class="card-body">
-                <form method="POST" action="{{ url_for('teacher.create_exam') }}">
+            <div class="card-body">                <form method="POST" action="{{ url_for('teacher.create_exam') }}">
                     {{ form.hidden_tag() }}
+                    {{ class_form.hidden_tag() }}
+                    
+                    <div class="mb-3">
+                        {{ class_form.group_id.label(class="form-label") }}
+                        {{ class_form.group_id(class="form-select") }}
+                        {% if class_form.group_id.errors %}
+                            <div class="text-danger">
+                                {% for error in class_form.group_id.errors %}
+                                    <small>{{ error }}</small>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    </div>
                     
                     <div class="mb-3">
                         {{ form.title.label(class="form-label") }}

@@ -298,3 +298,51 @@ class PasswordUpdateForm(FlaskForm):
         EqualTo('new_password', message='Passwords must match')
     ])
     submit = SubmitField('Update Password')
+
+class CreateGroupForm(FlaskForm):
+    """Form for creating a new group"""
+    name = StringField('Class Name', validators=[
+        DataRequired(),
+        Length(min=4, max=100, message='Class name must be between 4 and 100 characters')
+    ])
+    description = TextAreaField('Description', validators=[
+        Length(max=500, message='Description cannot exceed 500 characters')
+    ])
+    subject = StringField('Subject', validators=[
+        Length(max=50, message='Subject cannot exceed 50 characters')
+    ])
+    section = StringField('Section', validators=[
+        Length(max=20, message='Section cannot exceed 20 characters')
+    ])
+    room = StringField('Room', validators=[
+        Length(max=20, message='Room cannot exceed 20 characters')
+    ])
+    submit = SubmitField('Create Class')
+
+class JoinGroupForm(FlaskForm):
+    """Form for joining a group using a code"""
+    code = StringField('Class Code', validators=[
+        DataRequired(),
+        Length(min=6, max=6, message='Class code must be 6 characters'),
+        # Custom validator for format can be added here
+    ])
+    submit = SubmitField('Join Class')
+
+    def validate_code(self, field):
+        # Convert to uppercase for consistency
+        field.data = field.data.upper()
+        # Only allow uppercase letters and numbers
+        if not field.data.isalnum():
+            raise ValidationError('Class code can only contain letters and numbers')
+
+class AddGroupExamForm(FlaskForm):
+    group_id = SelectField('Class', coerce=int, validators=[DataRequired()])
+    submit = SubmitField('Add to Class')
+
+    def __init__(self, teacher_id, *args, **kwargs):
+        super(AddGroupExamForm, self).__init__(*args, **kwargs)
+        from app.models import Group
+        # Only show groups where this teacher is the owner
+        self.group_id.choices = [
+            (g.id, g.name) for g in Group.query.filter_by(teacher_id=teacher_id).all()
+        ]

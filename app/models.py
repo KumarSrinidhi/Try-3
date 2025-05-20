@@ -1,7 +1,7 @@
 from datetime import datetime
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-from app import db  # Import db from app package
+from app import db, login_manager
 
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -18,6 +18,8 @@ class User(UserMixin, db.Model):
     exam_reviews = db.relationship('ExamReview', foreign_keys='ExamReview.student_id', backref=db.backref('reviewer', lazy='joined'), lazy='dynamic')
     notifications = db.relationship('Notification', foreign_keys='Notification.user_id', backref=db.backref('notification_user', lazy='joined'), lazy='dynamic')
     security_logs = db.relationship('SecurityLog', backref='user', lazy='dynamic')
+    owned_groups = db.relationship('Group', backref=db.backref('teacher'), lazy='dynamic', foreign_keys='Group.teacher_id')
+    joined_groups = db.relationship('Group', secondary='group_membership', backref=db.backref('students', lazy='dynamic'), lazy='dynamic')
     
     def set_password(self, password):
         # Using PBKDF2-SHA256 as specified
@@ -44,6 +46,7 @@ class Exam(db.Model):
     description = db.Column(db.Text, nullable=True)
     time_limit_minutes = db.Column(db.Integer, nullable=False)
     creator_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    group_id = db.Column(db.Integer, db.ForeignKey('groups.id'))  # Optional group association
     is_published = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -88,6 +91,7 @@ class Exam(db.Model):
     attempts = db.relationship('ExamAttempt', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     reviews = db.relationship('ExamReview', backref='exam', lazy='dynamic')
     creator = db.relationship('User', backref='created_exams', foreign_keys=[creator_id])
+    group = db.relationship('Group', backref=db.backref('exams', lazy='dynamic'), foreign_keys=[group_id])
     
     def get_average_rating(self):
         """Calculate the average rating for this exam based on student reviews"""
@@ -255,3 +259,78 @@ class SecurityLog(db.Model):
 
     def __repr__(self):
         return f'<SecurityLog {self.id}: {self.event_type}>'
+
+
+class Group(db.Model):
+    """Model for managing class/course groups (Google Classroom style)"""
+    __tablename__ = 'groups'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    subject = db.Column(db.String(50))  # Subject area
+    section = db.Column(db.String(20))  # Class section/period
+    room = db.Column(db.String(20))  # Physical or virtual room
+    code = db.Column(db.String(6), unique=True, nullable=False)  # Joining code for students
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    teacher_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    archived = db.Column(db.Boolean, default=False)  # For archiving old classes
+    
+    # Link to User model through GroupMembership for students
+    students = db.relationship('User', 
+                           secondary='group_membership',
+                           backref=db.backref('enrolled_groups', lazy='dynamic'),
+                           lazy='dynamic')
+    
+    # Direct link to teacher
+    teacher = db.relationship('User', backref=db.backref('owned_classes', lazy='dynamic'), foreign_keys=[teacher_id])
+    
+    # Link to exams
+    exams = db.relationship('Exam', backref='class_group', lazy='dynamic')
+    
+    def generate_code(self):
+        """Generate a unique joining code"""
+        import random
+        import string
+        while True:
+            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            if not Group.query.filter_by(code=code).first():
+                return code
+    
+    def get_active_exams(self):
+        """Get all published exams for this class that are currently active"""
+        now = datetime.utcnow()
+        return self.exams.filter(
+            Exam.is_published == True,
+            (Exam.available_from <= now) | (Exam.available_from == None),
+            (Exam.available_until >= now) | (Exam.available_until == None)
+        ).all()
+    
+    def get_upcoming_exams(self):
+        """Get all published exams that aren't active yet"""
+        now = datetime.utcnow()
+        return self.exams.filter(
+            Exam.is_published == True,
+            Exam.available_from > now
+        ).all()
+    
+    def get_past_exams(self):
+        """Get all completed exams"""
+        now = datetime.utcnow()
+        return self.exams.filter(
+            Exam.is_published == True,
+            Exam.available_until < now
+        ).all()
+
+
+class GroupMembership(db.Model):
+    """Model for managing group memberships"""
+    __tablename__ = 'group_membership'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    group_id = db.Column(db.Integer, db.ForeignKey('groups.id'), nullable=False)
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Add unique constraint to prevent duplicate memberships
+    __table_args__ = (db.UniqueConstraint('user_id', 'group_id'),)

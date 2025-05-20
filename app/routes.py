@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 from flask import (
     Blueprint, render_template, redirect, url_for,
@@ -14,9 +14,10 @@ from app.models import db, User, Exam, Question, QuestionOption, ExamAttempt, An
 from app.forms import (
     ExamForm, QuestionForm, MCQAnswerForm, TextAnswerForm,
     CodeAnswerForm, GradeAnswerForm, ExamReviewForm, ImportQuestionsForm,
-    MarkAllReadForm, MarkReadForm, TakeExamForm
+    MarkAllReadForm, MarkReadForm, TakeExamForm, AddGroupExamForm
 )
 from app.notifications import notify_exam_graded, notify_new_exam, notify_new_review
+from app.decorators import admin_required, teacher_required, student_required
 
 # Create blueprints for organization
 main_bp = Blueprint('main', __name__)
@@ -55,23 +56,26 @@ def student_required(f):
 def check_time_expired(attempt):
     """Check if the exam time has expired for an attempt."""
     if not attempt or not attempt.started_at or not attempt.exam:
+        return True
+        
+    if not attempt.exam.duration:  # If no duration set, exam doesn't expire
         return False
         
-    time_limit = attempt.exam.time_limit_minutes * 60  # convert to seconds
-    time_taken = (datetime.utcnow() - attempt.started_at).total_seconds()
-    
-    # Add a small buffer for network latency (5 seconds)
-    return time_taken > (time_limit + 5)
+    time_limit = attempt.started_at + timedelta(minutes=attempt.exam.duration)
+    return datetime.utcnow() > time_limit
 
 def validate_submission_time(attempt, submission_time):
     """Validate that a submission is being made within the time limit."""
     if not attempt or not attempt.started_at or not attempt.exam:
         return False
         
-    time_limit = attempt.exam.time_limit_minutes * 60  # convert to seconds
-    time_taken = (submission_time - attempt.started_at).total_seconds()
+    if not attempt.exam.duration:  # If no duration set, submission is always valid
+        return True
+        
+    time_limit = attempt.started_at + timedelta(minutes=attempt.exam.duration)
+    grace_period = timedelta(minutes=1)  # 1 minute grace period for network delays
     
-    return time_taken <= (time_limit + 30) # 30 second grace period for submission
+    return submission_time <= (time_limit + grace_period)
 
 
 # Main routes
@@ -113,14 +117,18 @@ def dashboard():
 @teacher_required
 def create_exam():
     form = ExamForm()
-    if form.validate_on_submit():
+    # Add dropdown for selecting class
+    class_form = AddGroupExamForm(teacher_id=current_user.id)
+    
+    if form.validate_on_submit() and class_form.validate_on_submit():
         try:
             exam = Exam(
                 title=form.title.data,
                 description=form.description.data,
                 time_limit_minutes=form.time_limit_minutes.data,
                 creator_id=current_user.id,
-                is_published=form.is_published.data
+                is_published=form.is_published.data,
+                group_id=class_form.group_id.data  # Associate with class
             )
             db.session.add(exam)
             db.session.commit()
@@ -134,7 +142,7 @@ def create_exam():
             # Log the error (for admin/debugging purposes)
             print(f"Error creating exam: {str(e)}")
     
-    return render_template('teacher/create_exam.html', form=form)
+    return render_template('teacher/create_exam.html', form=form, class_form=class_form)
 
 
 @teacher_bp.route('/exams/<int:exam_id>/edit', methods=['GET', 'POST'])
@@ -805,11 +813,34 @@ def take_exam(exam_id):
             started_at=datetime.utcnow()
         )
         db.session.add(attempt)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            flash('Error starting exam. Please try again.', 'danger')
+            return redirect(url_for('main.dashboard'))
+    
+    # Create main form for CSRF protection
+    form = TakeExamForm()
     
     # Handle AJAX requests for saving answers
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest' and request.method == 'POST':
+        # Validate CSRF token
+        if not form.validate_on_submit():
+            return jsonify({
+                'success': False,
+                'message': 'Invalid form submission. Please refresh the page and try again.',
+                'error': 'csrf_error'
+            }), 400
+
         if check_time_expired(attempt):
+            attempt.is_completed = True
+            attempt.submitted_at = datetime.utcnow()
+            try:
+                db.session.commit()
+            except SQLAlchemyError:
+                db.session.rollback()
+            
             return jsonify({
                 'success': False,
                 'message': 'Exam time has expired',
@@ -827,29 +858,55 @@ def take_exam(exam_id):
                 'saved_at': datetime.utcnow().isoformat()
             })
             
-        except Exception as e:
+        except SQLAlchemyError as e:
             db.session.rollback()
+            print(f"Error saving answers: {str(e)}")
             return jsonify({
                 'success': False,
-                'message': str(e)
-            }, 500)
+                'message': "Error saving answers. Please try again.",
+                'error': 'database_error'
+            }), 500
 
     # Handle final submission
     if request.method == 'POST' and 'submit_exam' in request.form:
+        # Validate CSRF token
+        if not form.validate_on_submit():
+            return jsonify({
+                'success': False,
+                'message': 'Invalid form submission. Please refresh the page and try again.',
+                'error': 'csrf_error'
+            }), 400
+        
         submission_time = datetime.utcnow()
+        
+        # Check if exam was already completed (prevent double submission)
+        if attempt.is_completed:
+            return jsonify({
+                'success': False,
+                'message': 'This exam has already been submitted.',
+                'redirect_url': url_for('student.view_result', attempt_id=attempt.id)
+            }), 400
         
         # Validate submission time
         if not validate_submission_time(attempt, submission_time):
-            attempt.is_completed = True
-            attempt.submitted_at = submission_time
-            db.session.commit()
-            
-            flash('Your exam was submitted after the time limit.', 'warning')
-            return jsonify({
-                'success': True,
-                'message': 'Exam submitted (after time limit)',
-                'redirect_url': url_for('student.view_result', attempt_id=attempt.id)
-            })
+            try:
+                attempt.is_completed = True
+                attempt.submitted_at = submission_time
+                db.session.commit()
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Exam submitted (after time limit)',
+                    'redirect_url': url_for('student.view_result', attempt_id=attempt.id)
+                })
+            except SQLAlchemyError as e:
+                db.session.rollback()
+                print(f"Error submitting exam: {str(e)}")
+                return jsonify({
+                    'success': False,
+                    'message': "Error submitting exam. Please try again.",
+                    'error': 'database_error'
+                }), 500
         
         try:
             # Save final answers
@@ -860,25 +917,23 @@ def take_exam(exam_id):
             attempt.submitted_at = submission_time
             db.session.commit()
             
-            flash('Exam submitted successfully!', 'success')
             return jsonify({
                 'success': True,
                 'message': 'Exam submitted successfully',
                 'redirect_url': url_for('student.view_result', attempt_id=attempt.id)
             })
             
-        except Exception as e:
+        except SQLAlchemyError as e:
             db.session.rollback()
+            print(f"Error during exam submission: {str(e)}")
             return jsonify({
                 'success': False,
-                'message': str(e)
-            }, 500)
+                'message': "Error submitting exam. Your answers are saved and you can try submitting again.",
+                'error': 'database_error'
+            }), 500
     
     # Get all questions
     questions = Question.query.filter_by(exam_id=exam_id).order_by(Question.order).all()
-    
-    # Create main form for CSRF protection
-    form = TakeExamForm()
     
     # Prepare forms for each question type
     answer_forms = {}
@@ -906,7 +961,6 @@ def take_exam(exam_id):
             form = CodeAnswerForm()
             if question.id in existing_answers:
                 answer = existing_answers[question.id]
-                # Try to get code_answer first, fall back to text_answer if needed
                 form.code_answer.data = getattr(answer, 'code_answer', None) or answer.text_answer
             answer_forms[question.id] = form
     
@@ -917,48 +971,76 @@ def take_exam(exam_id):
         attempt=attempt,
         questions=questions,
         answer_forms=answer_forms,
-        form=form  # Add the form for CSRF protection
+        form=form  # Main form for CSRF protection
     )
 
 
 def save_answers(form_data, attempt):
-    """Helper function to save answers for an exam attempt."""
-    answers = Answer.query.filter_by(attempt_id=attempt.id).all()
-    answer_dict = {a.question_id: a for a in answers}
+    """
+    Save or update answers for an exam attempt
+    """
+    saved_question_ids = set()
     
     for key, value in form_data.items():
-        if key.startswith('answer_'):
-            question_id = int(key.split('_')[1])
-            question = Question.query.get(question_id)
-            
-            if not question:
-                continue
+        if key.startswith('question_'):
+            try:
+                question_id = int(key.split('_')[1])
+                saved_question_ids.add(question_id)
                 
-            answer = answer_dict.get(question_id)
-            
-            if not answer:
-                answer = Answer(attempt_id=attempt.id, question_id=question_id)
-                db.session.add(answer)
-            
-            if question.question_type == 'mcq':
-                if value.isdigit():
-                    answer.selected_option_id = int(value)
-                    # Auto-grade MCQs
-                    selected_option = QuestionOption.query.get(int(value))
-                    answer.is_correct = selected_option and selected_option.is_correct
-                    
-            elif question.question_type == 'text':
-                answer.text_answer = value
+                question = Question.query.get(question_id)
+                if not question:
+                    print(f"Warning: Question {question_id} not found")
+                    continue
                 
-            elif question.question_type == 'code':
-                # Try to set code_answer, fall back to text_answer if code_answer doesn't exist
-                try:
-                    answer.code_answer = value
-                except:
+                # Get or create answer
+                answer = Answer.query.filter_by(
+                    attempt_id=attempt.id,
+                    question_id=question_id
+                ).first()
+                
+                if not answer:
+                    answer = Answer(
+                        attempt_id=attempt.id,
+                        question_id=question_id
+                    )
+                    db.session.add(answer)
+                
+                # Update answer based on question type
+                if question.question_type == 'mcq':
+                    try:
+                        option_id = int(value)
+                        # Verify option belongs to question
+                        option = QuestionOption.query.filter_by(
+                            id=option_id,
+                            question_id=question_id
+                        ).first()
+                        if option:
+                            answer.selected_option_id = option_id
+                        else:
+                            print(f"Warning: Invalid option {option_id} for question {question_id}")
+                    except (ValueError, TypeError) as e:
+                        print(f"Error processing MCQ answer: {str(e)}")
+                        continue
+                        
+                elif question.question_type in ['text', 'code']:
                     answer.text_answer = value
+                    if question.question_type == 'code':
+                        answer.code_answer = value
                 
-    db.session.flush()
-
+                db.session.flush()  # Flush changes for this answer
+                
+            except (ValueError, TypeError) as e:
+                print(f"Error processing answer for key {key}: {str(e)}")
+                continue
+    
+    # Verify all questions were processed
+    expected_questions = set(q.id for q in Question.query.filter_by(exam_id=attempt.exam_id).all())
+    missing_questions = expected_questions - saved_question_ids
+    
+    if missing_questions:
+        print(f"Warning: Missing answers for questions: {missing_questions}")
+    
+    return True
 
 @student_bp.route('/exams/get_server_time', methods=['GET'])
 @login_required

@@ -165,8 +165,8 @@
                     <div class="list-group list-group-flush">
                         {% for attempt in attempts[:5] %}
                         <div class="list-group-item">                            <div class="d-flex w-100 justify-content-between">
-                                <h6 class="mb-1">{{ attempt.student.username }} completed {{ attempt.exam.title }}</h6>
-                                <small class="text-muted">{{ attempt.completed_at|timesince }}</small>
+                                <h6 class="mb-1">{{ attempt.student.username }} {% if attempt.completed_at %}completed{% else %}started{% endif %} {{ attempt.exam.title }}</h6>
+                                <small class="text-muted">{% if attempt.completed_at %}{{ attempt.completed_at|timesince }}{% else %}In Progress{% endif %}</small>
                             </div>
                             <small class="text-muted">Score: {% if attempt.score is not none %}{{ "%.1f"|format(attempt.score) }}%{% else %}Pending{% endif %}</small>
                         </div>
@@ -334,10 +334,6 @@
                 </div>
             </div>
         </div>    </div>
-    <div id="system-settings" class="mb-5">
-        <h3 class="admin-section-title">System Settings</h3>
-        <p class="text-muted">(Settings management coming soon...)</p>
-    </div>
 </div>
 
 <!-- Backup Modal -->
