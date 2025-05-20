@@ -29,20 +29,20 @@ def create_app(config_class=Config):
                 template_folder='../templates',
                 static_folder='../static')
     app.config.from_object(config_class)
-    
-    # Initialize extensions
+      # Initialize extensions
     db.init_app(app)
     login_manager.init_app(app)
-    mail.init_app(app)    csrf.init_app(app)
+    mail.init_app(app)
+    csrf.init_app(app)
     migrate = Migrate(app, db)
-    
+
     # Configure CSRF for AJAX
-    @csrf.header_loader
-    def read_csrf_token_from_header(name):
-        header_token = request.headers.get('X-CSRF-Token')
-        if header_token:
-            return header_token
-        return None
+    @app.before_request
+    def csrf_protect():
+        if request.method != 'GET':
+            token = request.headers.get('X-CSRF-Token')
+            if token:
+                return token
     
     # Register blueprints
     from app.auth import auth_bp
