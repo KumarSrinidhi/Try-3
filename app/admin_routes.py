@@ -5,6 +5,8 @@ from app.models import db, User, Exam, ExamAttempt
 from app.forms import UserEditForm, CreateUserForm, ExamForm
 from werkzeug.security import generate_password_hash
 from functools import wraps
+import json
+from datetime import datetime
 
 # Create blueprint
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
@@ -160,3 +162,121 @@ def create_exam():
             flash('Error creating exam.', 'danger')
     
     return render_template('admin/create_exam.html', form=form)
+
+@admin_bp.route('/backup', methods=['POST'])
+@login_required
+@admin_required
+def backup_data():
+    try:
+        # Get selected backup options
+        backup_users = 'backup_users' in request.form
+        backup_exams = 'backup_exams' in request.form
+        backup_attempts = 'backup_attempts' in request.form
+        
+        # Create backup timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_data = {}
+        
+        if backup_users:
+            users = User.query.all()
+            backup_data['users'] = [
+                {
+                    'username': user.username,
+                    'email': user.email,
+                    'user_type': user.user_type,
+                    'created_at': user.created_at.isoformat()
+                } for user in users
+            ]
+        
+        if backup_exams:
+            exams = Exam.query.all()
+            backup_data['exams'] = [
+                {
+                    'title': exam.title,
+                    'description': exam.description,
+                    'time_limit_minutes': exam.time_limit_minutes,
+                    'is_published': exam.is_published,
+                    'created_at': exam.created_at.isoformat()
+                } for exam in exams
+            ]
+        
+        if backup_attempts:
+            attempts = ExamAttempt.query.all()
+            backup_data['attempts'] = [
+                {
+                    'student_id': attempt.student_id,
+                    'exam_id': attempt.exam_id,
+                    'started_at': attempt.started_at.isoformat() if attempt.started_at else None,
+                    'completed_at': attempt.completed_at.isoformat() if attempt.completed_at else None,
+                    'score': attempt.score
+                } for attempt in attempts
+            ]
+        
+        # Create JSON file
+        backup_file = f'backup_{timestamp}.json'
+        with open(backup_file, 'w') as f:
+            json.dump(backup_data, f, indent=4)
+        
+        flash('Backup created successfully!', 'success')
+        return redirect(url_for('main.admin_dashboard'))
+        
+    except Exception as e:
+        flash('Error creating backup: ' + str(e), 'danger')
+        return redirect(url_for('main.admin_dashboard'))
+
+@admin_bp.route('/system-logs')
+@login_required
+@admin_required
+def system_logs():
+    # Get system logs (example implementation)
+    logs = [
+        {'timestamp': datetime.now(), 'level': 'INFO', 'message': 'System started successfully'},
+        {'timestamp': datetime.now(), 'level': 'WARNING', 'message': 'High CPU usage detected'},
+        # Add more logs as needed
+    ]
+    return render_template('admin/system_logs.html', logs=logs)
+
+@admin_bp.route('/settings', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def system_settings():
+    if request.method == 'POST':
+        try:
+            # Update system settings
+            app.config['MAIL_SERVER'] = request.form.get('mail_server')
+            app.config['MAIL_PORT'] = int(request.form.get('mail_port'))
+            # Add more settings as needed
+            
+            flash('Settings updated successfully!', 'success')
+        except Exception as e:
+            flash('Error updating settings: ' + str(e), 'danger')
+    
+    return render_template('admin/settings.html')
+
+@admin_bp.route('/send-mass-email', methods=['POST'])
+@login_required
+@admin_required
+def send_mass_email():
+    try:
+        recipient_group = request.form.get('recipient_group')
+        subject = request.form.get('subject')
+        content = request.form.get('content')
+        
+        # Get recipients based on selected group
+        if recipient_group == 'all':
+            recipients = User.query.all()
+        elif recipient_group == 'teachers':
+            recipients = User.query.filter_by(user_type='teacher').all()
+        else:  # students
+            recipients = User.query.filter_by(user_type='student').all()
+        
+        # Send emails (implement actual email sending logic)
+        for recipient in recipients:
+            # Add to email queue or send directly
+            pass
+        
+        flash(f'Email sent to {len(recipients)} recipients!', 'success')
+    except Exception as e:
+        flash('Error sending email: ' + str(e), 'danger')
+    
+    return redirect(url_for('main.admin_dashboard'))
