@@ -148,6 +148,7 @@ CREATE TABLE answers (
     question_id INT NOT NULL,
     selected_option_id INT,
     text_answer TEXT,
+    code_answer TEXT,
     is_correct BOOLEAN,
     teacher_feedback TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

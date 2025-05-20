@@ -14,7 +14,7 @@ from app.models import db, User, Exam, Question, QuestionOption, ExamAttempt, An
 from app.forms import (
     ExamForm, QuestionForm, MCQAnswerForm, TextAnswerForm,
     CodeAnswerForm, GradeAnswerForm, ExamReviewForm, ImportQuestionsForm,
-    MarkAllReadForm, MarkReadForm
+    MarkAllReadForm, MarkReadForm, TakeExamForm
 )
 from app.notifications import notify_exam_graded, notify_new_exam, notify_new_review
 
@@ -877,6 +877,9 @@ def take_exam(exam_id):
     # Get all questions
     questions = Question.query.filter_by(exam_id=exam_id).order_by(Question.order).all()
     
+    # Create main form for CSRF protection
+    form = TakeExamForm()
+    
     # Prepare forms for each question type
     answer_forms = {}
     existing_answers = {}
@@ -913,7 +916,8 @@ def take_exam(exam_id):
         exam=exam,
         attempt=attempt,
         questions=questions,
-        answer_forms=answer_forms
+        answer_forms=answer_forms,
+        form=form  # Add the form for CSRF protection
     )
 
 

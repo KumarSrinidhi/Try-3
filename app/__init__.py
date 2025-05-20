@@ -1,4 +1,4 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_login import LoginManager, current_user
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
@@ -33,9 +33,16 @@ def create_app(config_class=Config):
     # Initialize extensions
     db.init_app(app)
     login_manager.init_app(app)
-    mail.init_app(app)
-    csrf.init_app(app)
+    mail.init_app(app)    csrf.init_app(app)
     migrate = Migrate(app, db)
+    
+    # Configure CSRF for AJAX
+    @csrf.header_loader
+    def read_csrf_token_from_header(name):
+        header_token = request.headers.get('X-CSRF-Token')
+        if header_token:
+            return header_token
+        return None
     
     # Register blueprints
     from app.auth import auth_bp

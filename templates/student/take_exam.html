@@ -263,9 +263,8 @@
             <h1 class="display-6">{{ exam.title }}</h1>
             <p class="lead text-muted mb-4">{{ exam.description }}</p>
         </div>
-    </div>
-
-    <form method="POST" action="{{ url_for('student.take_exam', exam_id=exam.id) }}" id="examForm" class="needs-validation" novalidate>
+    </div>    <form method="POST" action="{{ url_for('student.take_exam', exam_id=exam.id) }}" id="examForm" class="needs-validation" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="questions-container">
             {% for question in questions %}
             <div class="card shadow-sm mb-4 question-card">
@@ -494,10 +493,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 formData.append('save_answers', 'true');
 
                 const response = await fetch(form.action, {
-                    method: 'POST',
-                    body: formData,
+                    method: 'POST',                    body: formData,
                     headers: {
-                        'X-Requested-With': 'XMLHttpRequest'
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-Token': formData.get('csrf_token')
                     }
                 });
                 
@@ -578,10 +577,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 form.appendChild(submitInput);
             }
 
-            clearAllIntervals();
+            clearAllIntervals();            const formData = new FormData(form);
             const response = await fetch(form.action, {
                 method: 'POST',
-                body: new FormData(form)
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-Token': formData.get('csrf_token')
+                }
             });
 
             if (response.ok) {

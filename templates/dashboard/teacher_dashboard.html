@@ -159,17 +159,17 @@
                                                 </a></li>                                                <li><a href="{{ url_for('teacher.edit_exam', exam_id=exam.id) }}" class="dropdown-item">
                                                     <i class="fas fa-tasks"></i> Edit Questions
                                                 </a></li>
-                                                <li><hr class="dropdown-divider"></li>
-                                                {% if exam.is_published %}
+                                                <li><hr class="dropdown-divider"></li>                                                {% if exam.is_published %}
                                                 <li>
                                                     <form method="POST" action="{{ url_for('teacher.exam_unpublish', exam_id=exam.id) }}" class="d-inline">
+                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                                         <button type="submit" class="dropdown-item text-danger">
                                                             <i class="fas fa-eye-slash"></i> Unpublish
                                                         </button>
                                                     </form>
-                                                </li>
-                                                {% else %}                                                <li>
+                                                </li>{% else %}                                                <li>
                                                     <form method="POST" action="{{ url_for('teacher.publish_exam', exam_id=exam.id) }}" class="d-inline">
+                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                                         <button type="submit" class="dropdown-item text-success">
                                                             <i class="fas fa-check-circle"></i> Publish
                                                         </button>
@@ -291,9 +291,9 @@
                 <p class="text-danger">Are you sure you want to delete <strong id="delete-exam-title"></strong>?</p>
                 <p>This action cannot be undone. All associated questions, submissions, and grades will be permanently deleted.</p>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <div class="modal-footer">                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <form id="delete-exam-form" method="POST" action="">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn btn-danger">Delete Permanently</button>
                 </form>
             </div>

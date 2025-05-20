@@ -50,8 +50,8 @@
         </div>
     </div>
     
-    <div class="col-md-8">
-        <form method="POST" action="{{ url_for('teacher.grade_attempt', attempt_id=attempt.id) }}">
+    <div class="col-md-8">        <form method="POST" action="{{ url_for('teacher.grade_attempt', attempt_id=attempt.id) }}">
+            {{ grading_form.csrf_token }}
             {% for answer in answers %}
                 {% if answer.question.question_type in ['code', 'text'] %}
                     <div class="card shadow-sm mb-4">

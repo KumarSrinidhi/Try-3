@@ -234,6 +234,10 @@ class CodeAnswerForm(FlaskForm):
     code_answer = TextAreaField('Your Code', validators=[DataRequired()])
 
 
+class TakeExamForm(FlaskForm):
+    """Form for exam submission - mainly for CSRF protection"""
+    pass
+
 class GradeAnswerForm(FlaskForm):
     is_correct = BooleanField('Correct')
     points_awarded = IntegerField('Points Awarded', validators=[NumberRange(min=0)])
@@ -264,3 +268,15 @@ class MarkAllReadForm(FlaskForm):
 
 class MarkReadForm(FlaskForm):
     submit = SubmitField('Mark Read')
+
+class PasswordUpdateForm(FlaskForm):
+    current_password = PasswordField('Current Password', validators=[DataRequired()])
+    new_password = PasswordField('New Password', validators=[
+        DataRequired(),
+        Length(min=8, message='Password must be at least 8 characters')
+    ])
+    confirm_password = PasswordField('Confirm New Password', validators=[
+        DataRequired(),
+        EqualTo('new_password', message='Passwords must match')
+    ])
+    submit = SubmitField('Update Password')

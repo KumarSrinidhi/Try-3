@@ -1,4 +1,4 @@
-Dear {{ student.username }},
+Dear {{ user.username }},
 
 A new exam "{{ exam.title }}" has been published and is now available for you to take.
 
