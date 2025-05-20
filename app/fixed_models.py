@@ -87,12 +87,13 @@ class Exam(db.Model):
     proctor_notes = db.Column(db.Text, nullable=True)  # Notes visible only to proctors
     max_students_per_proctor = db.Column(db.Integer, default=20)  # Max students per proctor
     proctor_join_before = db.Column(db.Integer, default=15)  # Minutes before exam starts
-      # Relationships
+    
+    # Relationships
     questions = db.relationship('Question', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     attempts = db.relationship('ExamAttempt', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     reviews = db.relationship('ExamReview', backref='exam', lazy='dynamic')
     creator = db.relationship('User', backref='created_exams', foreign_keys=[creator_id])
-    group = db.relationship('Group', foreign_keys=[group_id])
+    group = db.relationship('Group', backref=db.backref('exams', lazy='dynamic'), foreign_keys=[group_id])
     
     def get_average_rating(self):
         """Calculate the average rating for this exam based on student reviews"""
@@ -280,11 +281,12 @@ class Group(db.Model):
     # Link to User model through GroupMembership for students
     # Removed the backref to prevent circular references
     students = db.relationship('User', secondary='group_membership', lazy='dynamic')
-      # Direct link to teacher
+    
+    # Direct link to teacher
     teacher = db.relationship('User', backref=db.backref('owned_classes', lazy='dynamic'), foreign_keys=[teacher_id])
     
     # Link to exams
-    exams = db.relationship('Exam', backref='class_group', lazy='dynamic', foreign_keys='Exam.group_id')
+    exams = db.relationship('Exam', backref='class_group', lazy='dynamic')
     
     def generate_code(self):
         """Generate a unique joining code"""

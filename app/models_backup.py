@@ -11,14 +11,11 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     user_type = db.Column(db.String(20), nullable=False)  # admin/teacher/student
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # Relationships
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)    # Relationships
     exams_created = db.relationship('Exam', foreign_keys='Exam.creator_id', lazy='dynamic')
     exam_attempts = db.relationship('ExamAttempt', backref='student', lazy='dynamic')
     exam_reviews = db.relationship('ExamReview', foreign_keys='ExamReview.student_id', backref=db.backref('reviewer', lazy='joined'), lazy='dynamic')
-    notifications = db.relationship('Notification', foreign_keys='Notification.user_id', backref=db.backref('notification_user', lazy='joined'), lazy='dynamic')
-    security_logs = db.relationship('SecurityLog', backref='user', lazy='dynamic')
+    notifications = db.relationship('Notification', foreign_keys='Notification.user_id', backref=db.backref('notification_user', lazy='joined'), lazy='dynamic')    security_logs = db.relationship('SecurityLog', backref='user', lazy='dynamic')
     owned_groups = db.relationship('Group', foreign_keys='Group.teacher_id', lazy='dynamic')
     joined_groups = db.relationship('Group', secondary='group_membership', lazy='dynamic')
     
@@ -74,8 +71,7 @@ class Exam(db.Model):
     browser_fullscreen = db.Column(db.Boolean, default=True)  # Require fullscreen mode
     restrict_keyboard = db.Column(db.Boolean, default=True)  # Block keyboard shortcuts
     block_external_displays = db.Column(db.Boolean, default=True)  # Block external monitors
-    
-    # Access settings
+      # Access settings
     access_code = db.Column(db.String(10), nullable=True)
     allowed_ip_range = db.Column(db.String(100), nullable=True)  # Allowed IP range
     available_from = db.Column(db.DateTime, nullable=True)
@@ -87,12 +83,13 @@ class Exam(db.Model):
     proctor_notes = db.Column(db.Text, nullable=True)  # Notes visible only to proctors
     max_students_per_proctor = db.Column(db.Integer, default=20)  # Max students per proctor
     proctor_join_before = db.Column(db.Integer, default=15)  # Minutes before exam starts
-      # Relationships
+    
+    # Relationships
     questions = db.relationship('Question', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     attempts = db.relationship('ExamAttempt', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     reviews = db.relationship('ExamReview', backref='exam', lazy='dynamic')
     creator = db.relationship('User', backref='created_exams', foreign_keys=[creator_id])
-    group = db.relationship('Group', foreign_keys=[group_id])
+    group = db.relationship('Group', backref=db.backref('exams', lazy='dynamic'), foreign_keys=[group_id])
     
     def get_average_rating(self):
         """Calculate the average rating for this exam based on student reviews"""
@@ -278,13 +275,15 @@ class Group(db.Model):
     archived = db.Column(db.Boolean, default=False)  # For archiving old classes
     
     # Link to User model through GroupMembership for students
-    # Removed the backref to prevent circular references
-    students = db.relationship('User', secondary='group_membership', lazy='dynamic')
+    students = db.relationship('User', 
+                           secondary='group_membership',
+                           backref=db.backref('enrolled_groups', lazy='dynamic'),
+                           lazy='dynamic')
       # Direct link to teacher
     teacher = db.relationship('User', backref=db.backref('owned_classes', lazy='dynamic'), foreign_keys=[teacher_id])
     
     # Link to exams
-    exams = db.relationship('Exam', backref='class_group', lazy='dynamic', foreign_keys='Exam.group_id')
+    exams = db.relationship('Exam', backref='class_group', lazy='dynamic')
     
     def generate_code(self):
         """Generate a unique joining code"""
@@ -332,8 +331,3 @@ class GroupMembership(db.Model):
     
     # Add unique constraint to prevent duplicate memberships
     __table_args__ = (db.UniqueConstraint('user_id', 'group_id'),)
-
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
