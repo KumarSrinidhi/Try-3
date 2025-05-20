@@ -62,9 +62,13 @@
             </div>
         </div>
     </div>
-    <hr>
-    <div id="user-management" class="mb-5">
-        <h3 class="admin-section-title">User Management</h3>
+    <hr>    <div id="user-management" class="mb-5">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h3 class="admin-section-title mb-0">User Management</h3>
+            <a href="{{ url_for('admin.create_user') }}" class="btn btn-primary">
+                <i class="bi bi-person-plus"></i> Create User
+            </a>
+        </div>
         <div class="table-responsive">
             <table class="table table-hover">
                 <thead>
@@ -120,9 +124,13 @@
                 </div>
             </div>
         </div>
-    </div>
-    <div id="exam-management" class="mb-5">
-        <h3 class="admin-section-title">Exam Management</h3>
+    </div>    <div id="exam-management" class="mb-5">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h3 class="admin-section-title mb-0">Exam Management</h3>
+            <a href="{{ url_for('admin.create_exam') }}" class="btn btn-success">
+                <i class="bi bi-plus-circle"></i> Create Exam
+            </a>
+        </div>
         <div class="table-responsive">
             <table class="table table-hover">
                 <thead>

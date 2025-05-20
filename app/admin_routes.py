@@ -2,7 +2,8 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request,
 from flask_login import login_required, current_user
 from sqlalchemy.exc import SQLAlchemyError
 from app.models import db, User, Exam, ExamAttempt
-from app.forms import UserEditForm
+from app.forms import UserEditForm, CreateUserForm, ExamForm
+from werkzeug.security import generate_password_hash
 from functools import wraps
 
 # Create blueprint
@@ -103,3 +104,59 @@ def toggle_exam_publish(exam_id):
         flash('Error updating exam status.', 'danger')
     
     return redirect(url_for('main.admin_dashboard'))
+
+@admin_bp.route('/users/create', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def create_user():
+    form = CreateUserForm()
+    if form.validate_on_submit():
+        try:
+            # Check if username or email already exists
+            if User.query.filter_by(username=form.username.data).first():
+                flash('Username already exists.', 'danger')
+                return render_template('admin/create_user.html', form=form)
+            
+            if User.query.filter_by(email=form.email.data).first():
+                flash('Email already exists.', 'danger')
+                return render_template('admin/create_user.html', form=form)
+            
+            user = User(
+                username=form.username.data,
+                email=form.email.data,
+                user_type=form.user_type.data,
+                password_hash=generate_password_hash(form.password.data)
+            )
+            db.session.add(user)
+            db.session.commit()
+            flash('User created successfully!', 'success')
+            return redirect(url_for('main.admin_dashboard'))
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            flash('Error creating user.', 'danger')
+    
+    return render_template('admin/create_user.html', form=form)
+
+@admin_bp.route('/exams/create', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def create_exam():
+    form = ExamForm()
+    if form.validate_on_submit():
+        try:
+            exam = Exam(
+                title=form.title.data,
+                description=form.description.data,
+                time_limit_minutes=form.time_limit_minutes.data,
+                creator_id=current_user.id,
+                is_published=form.is_published.data
+            )
+            db.session.add(exam)
+            db.session.commit()
+            flash('Exam created successfully!', 'success')
+            return redirect(url_for('main.admin_dashboard'))
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            flash('Error creating exam.', 'danger')
+    
+    return render_template('admin/create_exam.html', form=form)

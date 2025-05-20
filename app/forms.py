@@ -19,6 +19,18 @@ class UserEditForm(FlaskForm):
     user_type = SelectField('User Type', choices=[('student', 'Student'), ('teacher', 'Teacher'), ('admin', 'Admin')], validators=[DataRequired()])
     submit = SubmitField('Save Changes')
 
+class CreateUserForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired(), Length(min=2, max=64)])
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    password = PasswordField('Password', validators=[
+        DataRequired(),
+        Length(min=6),
+        EqualTo('password_confirm', message='Passwords must match')
+    ])
+    password_confirm = PasswordField('Confirm Password', validators=[DataRequired()])
+    user_type = SelectField('User Type', choices=[('student', 'Student'), ('teacher', 'Teacher'), ('admin', 'Admin')], validators=[DataRequired()])
+    submit = SubmitField('Create User')
+
 class LoginForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired()])
     password = PasswordField('Password', validators=[DataRequired()])
