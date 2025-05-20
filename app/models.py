@@ -12,9 +12,8 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     user_type = db.Column(db.String(20), nullable=False)  # admin/teacher/student
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    # Relationships
-    exams_created = db.relationship('Exam', backref='creator', lazy='dynamic')
+      # Relationships
+    exams_created = db.relationship('Exam', foreign_keys='Exam.creator_id', lazy='dynamic')
     exam_attempts = db.relationship('ExamAttempt', backref='student', lazy='dynamic')
     exam_reviews = db.relationship('ExamReview', foreign_keys='ExamReview.student_id', backref=db.backref('reviewer', lazy='joined'), lazy='dynamic')
     notifications = db.relationship('Notification', foreign_keys='Notification.user_id', backref=db.backref('notification_user', lazy='joined'), lazy='dynamic')

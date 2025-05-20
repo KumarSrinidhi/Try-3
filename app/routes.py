@@ -8,6 +8,7 @@ from flask_login import login_required, current_user
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, desc
 from sqlalchemy.sql import case
+from functools import wraps
 
 from app.models import db, User, Exam, Question, QuestionOption, ExamAttempt, Answer, ExamReview, Notification
 from app.forms import (
@@ -23,13 +24,21 @@ teacher_bp = Blueprint('teacher', __name__, url_prefix='/teacher')
 student_bp = Blueprint('student', __name__, url_prefix='/student')
 
 
-# Helper function for role-based access control
+# Helper functions for role-based access control
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_admin():
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated_function
+
 def teacher_required(f):
+    @wraps(f)
     def decorated_function(*args, **kwargs):
         if not current_user.is_authenticated or not current_user.is_teacher():
             abort(403)
         return f(*args, **kwargs)
-    decorated_function.__name__ = f.__name__
     return decorated_function
 
 
@@ -76,11 +85,13 @@ def index():
 @main_bp.route('/dashboard')
 @login_required
 def dashboard():
-    if current_user.is_teacher():
+    if current_user.is_admin():
+        # For admins: redirect to admin dashboard
+        return redirect(url_for('main.admin_dashboard'))
+    elif current_user.is_teacher():
         # For teachers: show created exams
         exams = Exam.query.filter_by(creator_id=current_user.id).all()
         return render_template('dashboard/teacher_dashboard.html', exams=exams)
-    
     else:
         # For students: show available and completed exams
         available_exams = Exam.query.filter_by(is_published=True).all()
@@ -1067,9 +1078,8 @@ def view_result(attempt_id):
 
 @main_bp.route('/admin/dashboard')
 @login_required
+@admin_required
 def admin_dashboard():
-    if not current_user.is_admin():
-        abort(403)
     # Gather data for admin control center
     from app.models import User, Exam, ExamAttempt, Notification
     users = User.query.all()
