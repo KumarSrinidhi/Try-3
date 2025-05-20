@@ -1,0 +1,162 @@
+{% extends 'base.html' %}
+
+{% block title %}Admin Control Center - Exam Management System{% endblock %}
+
+{% block styles %}
+<style>
+.admin-card {
+    border-radius: 1rem;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    margin-bottom: 2rem;
+}
+.admin-section-title {
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: #007bff;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1 class="mb-4">Admin Control Center</h1>
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card admin-card">
+                <div class="card-body text-center">
+                    <i class="bi bi-people display-4 text-primary mb-2"></i>
+                    <h5 class="admin-section-title">User Management</h5>
+                    <p class="text-muted">View, add, or remove users. Assign roles and reset passwords.</p>
+                    <a href="#user-management" class="btn btn-outline-primary btn-sm">Manage Users</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card admin-card">
+                <div class="card-body text-center">
+                    <i class="bi bi-journal-text display-4 text-success mb-2"></i>
+                    <h5 class="admin-section-title">Exam Management</h5>
+                    <p class="text-muted">Oversee all exams, publish/unpublish, and manage exam settings.</p>
+                    <a href="#exam-management" class="btn btn-outline-success btn-sm">Manage Exams</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card admin-card">
+                <div class="card-body text-center">
+                    <i class="bi bi-bar-chart-line display-4 text-info mb-2"></i>
+                    <h5 class="admin-section-title">Analytics</h5>
+                    <p class="text-muted">View platform-wide statistics, usage, and performance analytics.</p>
+                    <a href="#analytics" class="btn btn-outline-info btn-sm">View Analytics</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card admin-card">
+                <div class="card-body text-center">
+                    <i class="bi bi-gear display-4 text-warning mb-2"></i>
+                    <h5 class="admin-section-title">System Settings</h5>
+                    <p class="text-muted">Configure platform settings, security, and notifications.</p>
+                    <a href="#system-settings" class="btn btn-outline-warning btn-sm">Settings</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    <hr>
+    <div id="user-management" class="mb-5">
+        <h3 class="admin-section-title">User Management</h3>
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.email }}</td>
+                        <td>{{ user.user_type|capitalize }}</td>
+                        <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+                        <td>
+                            <a href="#" class="btn btn-sm btn-outline-info">Edit</a>
+                            {% if user.user_type != 'admin' %}
+                            <a href="#" class="btn btn-sm btn-outline-danger">Delete</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div id="exam-management" class="mb-5">
+        <h3 class="admin-section-title">Exam Management</h3>
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Creator</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for exam in exams %}
+                    <tr>
+                        <td>{{ exam.title }}</td>
+                        <td>{{ exam.creator.username if exam.creator else 'N/A' }}</td>
+                        <td>{% if exam.is_published %}<span class="badge bg-success">Published</span>{% else %}<span class="badge bg-warning text-dark">Draft</span>{% endif %}</td>
+                        <td>{{ exam.created_at.strftime('%Y-%m-%d') }}</td>
+                        <td>
+                            <a href="#" class="btn btn-sm btn-outline-info">View</a>
+                            <a href="#" class="btn btn-sm btn-outline-danger">Delete</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div id="analytics" class="mb-5">
+        <h3 class="admin-section-title">Platform Analytics</h3>
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card admin-card">
+                    <div class="card-body text-center">
+                        <h5>Total Users</h5>
+                        <h2>{{ users|length }}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card admin-card">
+                    <div class="card-body text-center">
+                        <h5>Total Exams</h5>
+                        <h2>{{ exams|length }}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card admin-card">
+                    <div class="card-body text-center">
+                        <h5>Total Attempts</h5>
+                        <h2>{{ attempts|length }}</h2>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="system-settings" class="mb-5">
+        <h3 class="admin-section-title">System Settings</h3>
+        <p class="text-muted">(Settings management coming soon...)</p>
+    </div>
+</div>
+{% endblock %}

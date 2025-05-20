@@ -1,0 +1,665 @@
+{% extends 'base.html' %}
+
+{% block title %}Take Exam - {{ exam.title }}{% endblock %}
+
+{% block styles %}
+<style>
+    /* Timer styling */
+    #timer {
+        position: sticky;
+        top: 70px;
+        z-index: 100;
+        transition: all 0.3s ease;
+    }
+    
+    #timer .card-body {
+        background-color: rgba(248, 249, 250, 0.95);
+    }
+
+    #timer.warning h3 {
+        color: #ffc107 !important;
+        animation: pulse 2s infinite;
+    }
+
+    #timer.danger h3 {
+        color: #dc3545 !important;
+        animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+        100% { transform: scale(1); }
+    }
+    
+    /* Exam container styling */
+    #exam-container {
+        background-color: #fff;
+        transition: all 0.3s ease;
+    }
+    
+    .exam-controls {
+        position: sticky;
+        top: 10px;
+        z-index: 1000;
+        background-color: rgba(248, 249, 250, 0.95);
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        backdrop-filter: blur(5px);
+        margin-bottom: 20px;
+        transition: all 0.3s ease;
+    }
+
+    .exam-controls button {
+        transition: all 0.2s ease;
+    }
+
+    .exam-controls button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Question card styling */
+    .card {
+        border: none;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        transition: all 0.3s ease;
+        margin-bottom: 1.5rem;
+    }
+
+    .card:hover {
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .card-header {
+        background-color: #f8f9fa;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        padding: 1rem;
+    }
+
+    .card-body {
+        padding: 1.5rem;
+    }
+
+    /* Form controls styling */
+    .form-control {
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+
+    .form-control:focus {
+        box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.15);
+        border-color: #007bff;
+    }
+
+    /* Action buttons styling */
+    .btn {
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+        letter-spacing: 0.3px;
+        transition: all 0.3s ease;
+    }
+
+    .btn-primary {
+        background-color: #007bff;
+        border: none;
+    }
+
+    .btn-primary:hover {
+        background-color: #0056b3;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .btn-secondary {
+        background-color: #6c757d;
+        border: none;
+    }
+
+    .btn-secondary:hover {
+        background-color: #545b62;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Disable text selection for anti-copy */
+    .no-copy {
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+    }
+    
+    /* Fullscreen mode styling */
+    .fullscreen {
+        background-color: white;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 9999;
+        overflow-y: auto;
+        padding: 2rem;
+    }
+
+    /* Code editor styling */
+    textarea[style*="monospace"] {
+        font-family: 'Consolas', 'Monaco', monospace;
+        line-height: 1.5;
+        tab-size: 4;
+        background-color: #f8f9fa;
+        border-radius: 4px;
+    }
+
+    /* Radio buttons and checkboxes styling */
+    .form-check {
+        padding-left: 1.8rem;
+        margin-bottom: 0.8rem;
+    }
+
+    .form-check-input {
+        margin-left: -1.8rem;
+        cursor: pointer;
+    }
+
+    .form-check-label {
+        cursor: pointer;
+        padding: 0.2rem 0;
+        transition: all 0.2s ease;
+    }
+
+    .form-check-label:hover {
+        color: #007bff;
+    }
+
+    /* Modal styling */
+    .modal-content {
+        border: none;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    .modal-header {
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    }
+
+    .modal-footer {
+        border-top: 1px solid rgba(0, 0, 0, 0.05);
+    }
+
+    /* Save button states */
+    #save-progress-btn.saving {
+        background-color: #ffc107;
+        color: #000;
+    }
+
+    #save-progress-btn.saved {
+        background-color: #28a745;
+        color: #fff;
+    }
+
+    #save-progress-btn.error {
+        background-color: #dc3545;
+        color: #fff;
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 768px) {
+        .exam-controls {
+            flex-direction: column !important;
+            gap: 1rem;
+        }
+
+        #timer {
+            position: fixed;
+            top: auto;
+            bottom: 0;
+            right: 0;
+            margin: 1rem;
+            z-index: 1050;
+        }
+    }
+
+    /* Loading indicator */
+    .loading-spinner {
+        display: inline-block;
+        width: 1rem;
+        height: 1rem;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: #fff;
+        animation: spin 1s ease-in-out infinite;
+        margin-right: 0.5rem;
+    }
+
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="exam-container" class="no-copy">
+    <div class="exam-controls d-flex justify-content-between align-items-center">
+        <div class="d-flex gap-2">
+            <button type="button" id="fullscreen-toggle" class="btn btn-sm btn-outline-primary">
+                <i class="fas fa-expand"></i> Enter Fullscreen
+            </button>
+            <button type="button" id="leave-exam-btn" class="btn btn-sm btn-outline-danger">
+                <i class="fas fa-sign-out-alt"></i> Leave Exam
+            </button>
+        </div>
+        <div id="timer" class="card shadow-sm mb-0">
+            <div class="card-body py-2 px-3 text-center">
+                <h6 class="mb-0 text-muted">Time Remaining</h6>
+                <h3 id="countdown" class="mb-0">--:--:--</h3>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <h1 class="display-6">{{ exam.title }}</h1>
+            <p class="lead text-muted mb-4">{{ exam.description }}</p>
+        </div>
+    </div>
+
+    <form method="POST" action="{{ url_for('student.take_exam', exam_id=exam.id) }}" id="examForm" class="needs-validation" novalidate>
+        <div class="questions-container">
+            {% for question in questions %}
+            <div class="card shadow-sm mb-4 question-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <span class="text-muted small me-2">#{{ loop.index }}</span>
+                        Question
+                    </h5>
+                    <span class="badge bg-primary px-3 py-2">{{ question.points }} points</span>
+                </div>
+                <div class="card-body">
+                    <div class="question-text mb-4">
+                        {{ question.question_text | safe }}
+                    </div>
+                    
+                    {% if question.question_type == 'mcq' %}
+                    <div class="options-container">
+                        {% set form = answer_forms[question.id] %}
+                        {{ form.hidden_tag() }}
+                        <input type="hidden" name="question_id" value="{{ question.id }}">
+                        
+                        {% for option in question.options %}
+                        <div class="form-check custom-radio mb-3">
+                            <input type="radio" 
+                                   id="option_{{ option.id }}" 
+                                   name="answer_{{ question.id }}" 
+                                   value="{{ option.id }}" 
+                                   class="form-check-input"
+                                   {% if form.selected_option.data == option.id %}checked{% endif %}>
+                            <label class="form-check-label" for="option_{{ option.id }}">
+                                {{ option.option_text }}
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% elif question.question_type == 'text' %}
+                    <div class="text-answer-container">
+                        {% set form = answer_forms[question.id] %}
+                        {{ form.hidden_tag() }}
+                        <input type="hidden" name="question_id" value="{{ question.id }}">
+                        <textarea class="form-control"
+                                  rows="5"
+                                  name="answer_{{ question.id }}"
+                                  placeholder="Enter your answer here..."
+                                  >{{ form.answer_text.data or '' }}</textarea>
+                    </div>
+                    {% elif question.question_type == 'code' %}
+                    <div class="code-answer-container">
+                        {% set form = answer_forms[question.id] %}
+                        {{ form.hidden_tag() }}
+                        <input type="hidden" name="question_id" value="{{ question.id }}">
+                        <textarea class="form-control code-editor"
+                                  rows="10"
+                                  style="font-family: monospace;"
+                                  name="answer_{{ question.id }}"
+                                  placeholder="Write your code here..."
+                                  >{{ form.code_answer.data or '' }}</textarea>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div class="d-flex justify-content-between align-items-center sticky-bottom bg-light p-3 rounded-3 shadow-sm mb-5">
+            <button type="button" name="save_answers" class="btn btn-outline-secondary" id="save-progress-btn">
+                <i class="fas fa-save"></i> Save Progress
+            </button>
+            <button type="button" class="btn btn-primary btn-lg px-4" id="submit-exam-btn">
+                <i class="fas fa-check-circle me-2"></i> Submit Exam
+            </button>
+        </div>
+    </form>
+
+    <!-- Leave exam modal -->
+    <div class="modal fade" id="leaveExamModal" tabindex="-1" aria-labelledby="leaveExamModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="leaveExamModalLabel">
+                        <i class="fas fa-exclamation-triangle text-warning me-2"></i>
+                        Leave Exam
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-danger mb-2">Are you sure you want to leave the exam?</p>
+                    <p class="text-muted mb-0">Your current answers will be saved, but the exam will be marked as incomplete.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                    <a href="{{ url_for('main.dashboard') }}" class="btn btn-danger">
+                        <i class="fas fa-sign-out-alt"></i> Leave Exam
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Enhanced exam state management
+    const examState = {
+        submitted: false,
+        timeIsUp: false,
+        autoSaving: false,
+        submissionInProgress: false,
+        autoSaveDebounceTimer: null,
+        serverTimeOffset: 0,
+        lastSyncTime: Date.now(),
+        autoSaveRetryCount: 0,
+        maxAutoSaveRetries: 3
+    };
+
+    // Server time synchronization
+    async function syncWithServerTime() {
+        try {
+            const response = await fetch('/get_server_time');
+            if (response.ok) {
+                const serverTime = new Date(await response.text());
+                examState.serverTimeOffset = serverTime.getTime() - Date.now();
+                examState.lastSyncTime = Date.now();
+                return true;
+            }
+        } catch (error) {
+            console.error('Time sync error:', error);
+        }
+        return false;
+    }
+
+    // Initialize exam timer with server time sync
+    const serverStartTime = new Date("{{ attempt.started_at.isoformat() }}");
+    const clientStartTime = new Date();
+    examState.serverTimeOffset = serverStartTime.getTime() - clientStartTime.getTime();
+    
+    const timeLimit = Number("{{ exam.time_limit_minutes }}") * 60 * 1000; // convert to milliseconds
+    const endTime = new Date(serverStartTime.getTime() + timeLimit);
+    let timeoutId = null;
+
+    // Timer update function with server time sync
+    async function updateCountdown() {
+        // Re-sync with server every 5 minutes to prevent drift
+        if (Date.now() - examState.lastSyncTime > 300000) {
+            await syncWithServerTime();
+        }
+
+        const now = new Date(Date.now() + examState.serverTimeOffset);
+        const timeDiff = endTime - now;
+        
+        if (timeDiff <= 0) {
+            if (examState.timeIsUp || examState.submitted || examState.submissionInProgress) {
+                document.getElementById('countdown').textContent = "00:00:00";
+                return;
+            }
+
+            examState.timeIsUp = true;
+            examState.submissionInProgress = true;
+            
+            const timerDisplay = document.getElementById('countdown');
+            timerDisplay.textContent = "00:00:00";
+            timerDisplay.classList.add('text-danger');
+            
+            // Show time's up message
+            const timeUpAlert = document.createElement('div');
+            timeUpAlert.className = 'alert alert-danger text-center mt-3 fixed-top';
+            timeUpAlert.innerHTML = '<i class="fas fa-clock"></i> Time\'s up! Your exam is being submitted automatically...';
+            document.body.insertBefore(timeUpAlert, document.body.firstChild);
+            
+            clearAllIntervals();
+            await submitExam(true);
+            
+            // Disable all form inputs
+            const form = document.getElementById('examForm');
+            form.querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = true);
+            return;
+        }
+        
+        // Update timer display
+        const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+        const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((timeDiff % (1000 * 60)) / 1000);
+        
+        const display = document.getElementById('countdown');
+        display.textContent = [
+            hours.toString().padStart(2, '0'),
+            minutes.toString().padStart(2, '0'),
+            seconds.toString().padStart(2, '0')
+        ].join(':');
+        
+        // Update timer styling based on remaining time
+        const timerCard = document.getElementById('timer');
+        if (timeDiff < 5 * 60 * 1000) { // less than 5 minutes
+            timerCard.className = 'card shadow-sm mb-0 danger';
+            display.className = 'mb-0 text-danger fw-bold';
+        } else if (timeDiff < 15 * 60 * 1000) { // less than 15 minutes
+            timerCard.className = 'card shadow-sm mb-0 warning';
+            display.className = 'mb-0 text-warning';
+        }
+    }
+
+    // Improved auto-save implementation
+    async function autoSaveAnswers() {
+        if (examState.submitted || examState.timeIsUp || examState.submissionInProgress || examState.autoSaving) {
+            return;
+        }
+
+        if (examState.autoSaveDebounceTimer) {
+            clearTimeout(examState.autoSaveDebounceTimer);
+        }
+
+        examState.autoSaveDebounceTimer = setTimeout(async () => {
+            examState.autoSaving = true;
+            const saveBtn = document.getElementById('save-progress-btn');
+            const originalBtnText = saveBtn.innerHTML;
+            saveBtn.innerHTML = '<div class="loading-spinner"></div> Saving...';
+            saveBtn.disabled = true;
+
+            try {
+                const form = document.getElementById('examForm');
+                const formData = new FormData(form);
+                formData.append('save_answers', 'true');
+
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                });
+                
+                if (response.ok) {
+                    saveBtn.classList.remove('btn-outline-secondary', 'btn-danger');
+                    saveBtn.classList.add('btn-success');
+                    saveBtn.innerHTML = '<i class="fas fa-check"></i> Saved';
+                    examState.autoSaveRetryCount = 0;
+                    
+                    setTimeout(() => {
+                        if (!examState.submitted && !examState.timeIsUp) {
+                            saveBtn.classList.remove('btn-success');
+                            saveBtn.classList.add('btn-outline-secondary');
+                            saveBtn.innerHTML = originalBtnText;
+                            saveBtn.disabled = false;
+                        }
+                    }, 2000);
+
+                    console.log('Answers auto-saved at ' + new Date().toLocaleTimeString());
+                } else {
+                    throw new Error('Save failed');
+                }
+            } catch (error) {
+                console.error('Error auto-saving answers:', error);
+                saveBtn.classList.remove('btn-outline-secondary', 'btn-success');
+                saveBtn.classList.add('btn-danger');
+                saveBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Save Failed';
+                
+                // Implement retry logic
+                if (examState.autoSaveRetryCount < examState.maxAutoSaveRetries) {
+                    examState.autoSaveRetryCount++;
+                    setTimeout(autoSaveAnswers, 5000); // Retry after 5 seconds
+                } else {
+                    // Show error toast
+                    const toast = document.createElement('div');
+                    toast.className = 'alert alert-danger position-fixed bottom-0 end-0 m-3';
+                    toast.innerHTML = `
+                        <i class="fas fa-exclamation-circle"></i>
+                        Unable to save your answers. Please check your connection and try again.
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    `;
+                    document.body.appendChild(toast);
+                    setTimeout(() => toast.remove(), 5000);
+                }
+            } finally {
+                examState.autoSaving = false;
+            }
+        }, 1000);
+    }
+
+    // Enhanced exam submission with retries
+    async function submitExam(isAutoSubmit = false) {
+        if (examState.submitted || examState.submissionInProgress) {
+            return;
+        }
+
+        if (!isAutoSubmit) {
+            if (!confirm('Are you sure you want to submit your exam? You cannot make changes after submission.')) {
+                return;
+            }
+        }
+
+        examState.submissionInProgress = true;
+        const submitBtn = document.getElementById('submit-exam-btn');
+        const originalBtnText = submitBtn.innerHTML;
+        submitBtn.innerHTML = '<div class="loading-spinner"></div> Submitting...';
+        submitBtn.disabled = true;
+
+        try {
+            // Add hidden submit field
+            const form = document.getElementById('examForm');
+            let submitInput = form.querySelector('input[name="submit_exam"]');
+            if (!submitInput) {
+                submitInput = document.createElement('input');
+                submitInput.type = 'hidden';
+                submitInput.name = 'submit_exam';
+                submitInput.value = '1';
+                form.appendChild(submitInput);
+            }
+
+            clearAllIntervals();
+            const response = await fetch(form.action, {
+                method: 'POST',
+                body: new FormData(form)
+            });
+
+            if (response.ok) {
+                examState.submitted = true;
+                const result = await response.json();
+                window.location.href = result.redirect_url || '/dashboard';
+            } else {
+                throw new Error('Submission failed');
+            }
+
+        } catch (error) {
+            console.error('Error submitting exam:', error);
+            submitBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Submission Failed';
+            submitBtn.classList.remove('btn-primary');
+            submitBtn.classList.add('btn-danger');
+            
+            // Show error alert
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-danger position-fixed top-50 start-50 translate-middle';
+            alert.innerHTML = `
+                <h4 class="alert-heading">Submission Failed</h4>
+                <p>We couldn't submit your exam. Don't worry, your answers are saved.</p>
+                <hr>
+                <button class="btn btn-danger" onclick="submitExam(${isAutoSubmit})">
+                    <i class="fas fa-sync-alt"></i> Try Again
+                </button>
+            `;
+            document.body.appendChild(alert);
+            
+            examState.submissionInProgress = false;
+            submitBtn.disabled = false;
+        }
+    }
+
+    // Helper function to clear all intervals
+    function clearAllIntervals() {
+        if (timeoutId) {
+            clearInterval(timeoutId);
+            timeoutId = null;
+        }
+        if (window.autoSaveInterval) {
+            clearInterval(window.autoSaveInterval);
+            window.autoSaveInterval = null;
+        }
+    }
+
+    // Set up event handlers
+    const saveBtn = document.getElementById('save-progress-btn');
+    const submitBtn = document.getElementById('submit-exam-btn');
+    const formInputs = document.querySelectorAll('#examForm input, #examForm textarea, #examForm select');
+    
+    saveBtn.addEventListener('click', autoSaveAnswers);
+    submitBtn.addEventListener('click', () => submitExam(false));
+    formInputs.forEach(input => input.addEventListener('input', autoSaveAnswers));
+
+    // Start timer and auto-save
+    updateCountdown();
+    timeoutId = setInterval(updateCountdown, 1000);
+    window.autoSaveInterval = setInterval(autoSaveAnswers, 30000);
+
+    // Anti-copy paste implementation
+    document.addEventListener('copy', e => {
+        if (document.querySelector('.no-copy')) e.preventDefault();
+    });
+    document.addEventListener('paste', e => {
+        if (document.querySelector('.no-copy')) e.preventDefault();
+    });
+    document.addEventListener('cut', e => {
+        if (document.querySelector('.no-copy')) e.preventDefault();
+    });
+
+    // Handle beforeunload event
+    window.addEventListener('beforeunload', (e) => {
+        if (!examState.submitted && !examState.timeIsUp && !examState.submissionInProgress) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+});
+</script>
+{% endblock %}
