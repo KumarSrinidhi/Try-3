@@ -82,17 +82,43 @@
                         <td>{{ user.username }}</td>
                         <td>{{ user.email }}</td>
                         <td>{{ user.user_type|capitalize }}</td>
-                        <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
-                        <td>
-                            <a href="#" class="btn btn-sm btn-outline-info">Edit</a>
+                        <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>                        <td>
+                            <a href="{{ url_for('admin.edit_user', user_id=user.id) }}" class="btn btn-sm btn-outline-info">Edit</a>
                             {% if user.user_type != 'admin' %}
-                            <a href="#" class="btn btn-sm btn-outline-danger">Delete</a>
+                                <button type="button" class="btn btn-sm btn-outline-danger" 
+                                        data-bs-toggle="modal" 
+                                        data-bs-target="#deleteUserModal"
+                                        data-user-id="{{ user.id }}"
+                                        data-username="{{ user.username }}">Delete</button>
                             {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- Delete User Modal -->
+    <div class="modal fade" id="deleteUserModal" tabindex="-1" aria-labelledby="deleteUserModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="deleteUserModalLabel">Delete User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-danger">Are you sure you want to delete user <strong id="delete-user-name"></strong>?</p>
+                    <p>This action cannot be undone. All associated exams and attempts will be permanently deleted.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <form id="delete-user-form" method="POST" action="">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-danger">Delete Permanently</button>
+                    </form>
+                </div>
+            </div>
         </div>
     </div>
     <div id="exam-management" class="mb-5">
@@ -114,15 +140,48 @@
                         <td>{{ exam.title }}</td>
                         <td>{{ exam.creator.username if exam.creator else 'N/A' }}</td>
                         <td>{% if exam.is_published %}<span class="badge bg-success">Published</span>{% else %}<span class="badge bg-warning text-dark">Draft</span>{% endif %}</td>
-                        <td>{{ exam.created_at.strftime('%Y-%m-%d') }}</td>
-                        <td>
-                            <a href="#" class="btn btn-sm btn-outline-info">View</a>
-                            <a href="#" class="btn btn-sm btn-outline-danger">Delete</a>
+                        <td>{{ exam.created_at.strftime('%Y-%m-%d') }}</td>                        <td>
+                            <div class="btn-group">
+                                <form method="POST" action="{{ url_for('admin.toggle_exam_publish', exam_id=exam.id) }}" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-sm {% if exam.is_published %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
+                                        {% if exam.is_published %}Unpublish{% else %}Publish{% endif %}
+                                    </button>
+                                </form>
+                                <button type="button" class="btn btn-sm btn-outline-danger" 
+                                        data-bs-toggle="modal" 
+                                        data-bs-target="#deleteExamModal"
+                                        data-exam-id="{{ exam.id }}"
+                                        data-exam-title="{{ exam.title }}">Delete</button>
+                            </div>
                         </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- Delete Exam Modal -->
+    <div class="modal fade" id="deleteExamModal" tabindex="-1" aria-labelledby="deleteExamModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="deleteExamModalLabel">Delete Exam</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-danger">Are you sure you want to delete exam <strong id="delete-exam-title"></strong>?</p>
+                    <p>This action cannot be undone. All associated questions, attempts, and grades will be permanently deleted.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <form id="delete-exam-form" method="POST" action="">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-danger">Delete Permanently</button>
+                    </form>
+                </div>
+            </div>
         </div>
     </div>
     <div id="analytics" class="mb-5">
@@ -152,11 +211,49 @@
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
+        </div>    </div>
     <div id="system-settings" class="mb-5">
         <h3 class="admin-section-title">System Settings</h3>
         <p class="text-muted">(Settings management coming soon...)</p>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // User deletion modal
+    const deleteUserModal = document.getElementById('deleteUserModal');
+    if (deleteUserModal) {
+        deleteUserModal.addEventListener('show.bs.modal', function(event) {
+            const button = event.relatedTarget;
+            const userId = button.getAttribute('data-user-id');
+            const username = button.getAttribute('data-username');
+            
+            const deleteForm = document.getElementById('delete-user-form');
+            const usernameElement = document.getElementById('delete-user-name');
+            
+            deleteForm.action = `/admin/users/${userId}/delete`;
+            usernameElement.textContent = username;
+        });
+    }
+    
+    // Exam deletion modal
+    const deleteExamModal = document.getElementById('deleteExamModal');
+    if (deleteExamModal) {
+        deleteExamModal.addEventListener('show.bs.modal', function(event) {
+            const button = event.relatedTarget;
+            const examId = button.getAttribute('data-exam-id');
+            const examTitle = button.getAttribute('data-exam-title');
+            
+            const deleteForm = document.getElementById('delete-exam-form');
+            const examTitleElement = document.getElementById('delete-exam-title');
+            
+            deleteForm.action = `/admin/exams/${examId}/delete`;
+            examTitleElement.textContent = examTitle;
+        });
+    }
+});
+</script>
 {% endblock %}

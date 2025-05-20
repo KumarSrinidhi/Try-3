@@ -13,6 +13,12 @@ from datetime import datetime
 
 from app.models import User
 
+class UserEditForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired(), Length(min=2, max=64)])
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    user_type = SelectField('User Type', choices=[('student', 'Student'), ('teacher', 'Teacher'), ('admin', 'Admin')], validators=[DataRequired()])
+    submit = SubmitField('Save Changes')
+
 class LoginForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired()])
     password = PasswordField('Password', validators=[DataRequired()])

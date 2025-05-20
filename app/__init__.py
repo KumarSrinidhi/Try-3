@@ -34,24 +34,24 @@ def create_app(config_class=Config):
     login_manager.init_app(app)
     mail.init_app(app)
     csrf.init_app(app)
-    migrate = Migrate(app, db)
-
-    # Configure CSRF for AJAX
+    migrate = Migrate(app, db)    # Configure CSRF for AJAX
     @app.before_request
     def csrf_protect():
         if request.method != 'GET':
             token = request.headers.get('X-CSRF-Token')
             if token:
                 return token
-    
-    # Register blueprints
+
+    # Register blueprints (import here to avoid circular imports)
     from app.auth import auth_bp
-    from app.routes import main_bp, teacher_bp, student_bp, admin_dashboard
+    from app.admin_routes import admin_bp  # Import admin_bp first
+    from app.routes import main_bp, teacher_bp, student_bp
     
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
     app.register_blueprint(teacher_bp)
     app.register_blueprint(student_bp)
+    app.register_blueprint(admin_bp)
     
     # Error handlers
     @app.errorhandler(404)
