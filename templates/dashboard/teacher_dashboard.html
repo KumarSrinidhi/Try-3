@@ -438,7 +438,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const deleteForm = document.getElementById('delete-exam-form');
             const examTitleElement = document.getElementById('delete-exam-title');
             
-            deleteForm.action = `/teacher/exams/${examId}/delete`;
+            deleteForm.action = "{{ url_for('admin.delete_exam', exam_id=0) }}".replace('0', examId);
             examTitleElement.textContent = examTitle;
         });
     }

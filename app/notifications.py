@@ -153,14 +153,15 @@ def notify_exam_deadline_approaching():
         
         # Check if database is properly initialized and connected
         try:
-            if not db.engine:
-                logger.error("Database engine not initialized for background task")
+            if db.session is None or db.engine is None:
+                logger.error("Database session or engine not initialized for background task")
                 return 0
                 
-            # Test connection by executing a simple query
+            # Test connection by executing a simple query that should always work
             db.session.execute("SELECT 1").fetchone()
+            logger.info("Database connection verified for notification task")
         except Exception as e:
-            logger.error(f"Database connection failed: {str(e)}")
+            logger.error(f"Error in exam deadline notifications: {str(e)}")
             return 0
             
         # Reset the session to ensure we have a clean slate
@@ -178,8 +179,7 @@ def notify_exam_deadline_approaching():
                 Exam.is_published == True,
                 Exam.available_until.isnot(None),
                 Exam.available_until > now,
-                Exam.available_until <= soon
-            ).all()
+                Exam.available_until <= soon            ).all()
             
             logger.info(f"Found {len(upcoming_deadlines)} exams with upcoming deadlines")
             notification_count = 0
@@ -203,7 +203,7 @@ def notify_exam_deadline_approaching():
                         exam_id=exam.id,
                         student_id=student.id,
                         is_completed=True
-                    ).first()
+                        ).first()
                     
                     # Only notify students who haven't completed the exam
                     if not attempt:

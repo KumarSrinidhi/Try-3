@@ -10,7 +10,10 @@ from sqlalchemy import func, desc
 from sqlalchemy.sql import case
 from functools import wraps
 
-from app.models import db, User, Exam, Question, QuestionOption, ExamAttempt, Answer, ExamReview, Notification, Group
+from app.models import (
+    db, User, Exam, Question, QuestionOption, ExamAttempt, 
+    Answer, ExamReview, Notification, Group, ActivityLog
+)
 from app.forms import (
     ExamForm, QuestionForm, MCQAnswerForm, TextAnswerForm,
     CodeAnswerForm, GradeAnswerForm, ExamReviewForm, ImportQuestionsForm,
@@ -97,8 +100,15 @@ def dashboard():
         exams = Exam.query.filter_by(creator_id=current_user.id).all()
         return render_template('dashboard/teacher_dashboard.html', exams=exams)
     else:
-        # For students: show available and completed exams
-        available_exams = Exam.query.filter_by(is_published=True).all()
+        # For students: show available exams from joined groups
+        joined_groups = current_user.joined_groups.all()
+        group_ids = [g.id for g in joined_groups]
+
+        # Get published exams from joined groups
+        available_exams = Exam.query.filter(
+            Exam.is_published == True,
+            Exam.group_id.in_(group_ids)
+        ).all()
         
         # Get student's attempts
         attempts = ExamAttempt.query.filter_by(student_id=current_user.id).all()
@@ -125,10 +135,12 @@ def dashboard():
 @teacher_required
 def create_exam():
     form = ExamForm()
-    # Add dropdown for selecting class
-    class_form = AddGroupExamForm(teacher_id=current_user.id)
     
-    if form.validate_on_submit() and class_form.validate_on_submit():
+    # Populate class choices for the form
+    groups = Group.query.filter_by(teacher_id=current_user.id).all()
+    form.group_id.choices = [(g.id, g.name) for g in groups]
+    
+    if form.validate_on_submit():
         try:
             exam = Exam(
                 title=form.title.data,
@@ -136,10 +148,26 @@ def create_exam():
                 time_limit_minutes=form.time_limit_minutes.data,
                 creator_id=current_user.id,
                 is_published=form.is_published.data,
-                group_id=class_form.group_id.data  # Associate with class
+                group_id=form.group_id.data  # Class is now required
             )
             db.session.add(exam)
             db.session.commit()
+            
+            # Log exam creation
+            ActivityLog.log_activity(
+                user_id=current_user.id,
+                action="create_exam",
+                category="exam",
+                details={
+                    'exam_id': exam.id,
+                    'title': exam.title,
+                    'time_limit': exam.time_limit_minutes,
+                    'group_id': exam.group_id,
+                    'is_published': exam.is_published
+                },
+                ip_address=request.remote_addr,
+                user_agent=str(request.user_agent)
+            )
             
             flash('Exam created successfully!', 'success')
             return redirect(url_for('teacher.edit_exam', exam_id=exam.id))
@@ -150,7 +178,7 @@ def create_exam():
             # Log the error (for admin/debugging purposes)
             print(f"Error creating exam: {str(e)}")
     
-    return render_template('teacher/create_exam.html', form=form, class_form=class_form)
+    return render_template('teacher/create_exam.html', form=form)
 
 
 @teacher_bp.route('/exams/<int:exam_id>/edit', methods=['GET', 'POST'])
@@ -166,71 +194,71 @@ def edit_exam(exam_id):
     # Get existing questions
     questions = Question.query.filter_by(exam_id=exam_id).order_by(Question.order).all()
     
+    # Set up exam settings form
+    form = ExamForm(obj=exam)
+    groups = Group.query.filter_by(teacher_id=current_user.id).all()
+    form.group_id.choices = [(g.id, g.name) for g in groups]
+    
     # Form for adding new questions
-    form = QuestionForm()
+    question_form = QuestionForm()
     
     if request.method == 'POST':
-        if not form.validate():
-            for field, errors in form.errors.items():
-                for error in errors:
-                    flash(f'{form[field].label.text}: {error}', 'danger')
-            return render_template('teacher/edit_exam.html', exam=exam, questions=questions, form=form)
-            
-        try:
-            # Create new question
-            question = Question(
-                exam_id=exam_id,
-                question_text=form.question_text.data,
-                question_type=form.question_type.data,
-                points=form.points.data,
-                order=len(questions) + 1  # Add to the end
-            )
-            db.session.add(question)
-            db.session.flush()  # Flush to get question.id
-              # If MCQ, add options
-            if form.question_type.data == 'mcq':
-                has_correct = False
-                option_count = 0
-                
-                # First verify we have at least 2 valid options and 1 correct
-                valid_options = []
-                for option_form in form.options:
-                    if option_form.option_text.data and option_form.option_text.data.strip():
-                        valid_options.append(option_form)
-                        if option_form.is_correct.data:
-                            has_correct = True
-                
-                if len(valid_options) < 2:
+        # Handle exam settings form
+        if 'update_settings' in request.form:
+            if form.validate_on_submit():
+                try:
+                    exam.title = form.title.data
+                    exam.description = form.description.data
+                    exam.time_limit_minutes = form.time_limit_minutes.data
+                    exam.group_id = form.group_id.data
+                    exam.is_published = form.is_published.data
+                    db.session.commit()
+                    flash('Exam settings updated successfully!', 'success')
+                    return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
+                except SQLAlchemyError as e:
                     db.session.rollback()
-                    flash('MCQ questions must have at least 2 non-empty options', 'danger')
-                    return render_template('teacher/edit_exam.html', exam=exam, questions=questions, form=form)
-                
-                if not has_correct:
-                    db.session.rollback()
-                    flash('MCQ questions must have at least one correct answer', 'danger')
-                    return render_template('teacher/edit_exam.html', exam=exam, questions=questions, form=form)
-                
-                # Add options to the database
-                for option_form in valid_options:
-                    option = QuestionOption(
-                        question_id=question.id,
-                        option_text=option_form.option_text.data.strip(),
-                        is_correct=option_form.is_correct.data,
-                        order=option_count
-                    )
-                    db.session.add(option)
-                    option_count += 1
-            
-            db.session.commit()
-            flash('Question added successfully!', 'success')
-            return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
+                    flash('Error updating exam settings.', 'danger')
+                    print(f"Error updating exam: {str(e)}")
         
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            flash('An error occurred while adding the question.', 'danger')
-            print(f"Error adding question: {str(e)}")
+        # Handle add question form
+        elif 'add_question' in request.form:
+            if question_form.validate_on_submit():
+                try:
+                    question = Question(
+                        exam_id=exam_id,
+                        question_text=question_form.question_text.data,
+                        question_type=question_form.question_type.data,
+                        points=question_form.points.data,
+                        order=len(questions) + 1
+                    )
+                    db.session.add(question)
+                    
+                    # For MCQ questions, add options
+                    if question.question_type == 'mcq':
+                        option_count = 0
+                        for option_form in question_form.options:
+                            if option_form.option_text.data:  # Only add non-empty options
+                                option = QuestionOption(
+                                    question=question,
+                                    option_text=option_form.option_text.data,
+                                    is_correct=option_form.is_correct.data
+                                )
+                                db.session.add(option)
+                                option_count += 1
+                    
+                    db.session.commit()
+                    flash('Question added successfully!', 'success')
+                    return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
+                except SQLAlchemyError as e:
+                    db.session.rollback()
+                    flash('Error adding question.', 'danger')
+                    print(f"Error adding question: {str(e)}")
     
-    return render_template('teacher/edit_exam.html', exam=exam, questions=questions, form=form)
+    return render_template('teacher/edit_exam.html',
+                         exam=exam,
+                         questions=questions,
+                         form=form,
+                         question_form=question_form)
 
 
 @teacher_bp.route('/exams/<int:exam_id>/questions/<int:question_id>/delete', methods=['POST'])
@@ -264,6 +292,11 @@ def publish_exam(exam_id):
     # Check if current user is the creator
     if exam.creator_id != current_user.id:
         abort(403)
+    
+    # Verify exam has a group assigned
+    if not exam.group_id:
+        flash('Exam must be assigned to a class before publishing.', 'warning')
+        return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
     
     was_already_published = exam.is_published
     exam.is_published = True
@@ -380,12 +413,11 @@ def grade_attempt(attempt_id):
             form = GradeAnswerForm(prefix=f'answer_{answer.id}')
             form.points_awarded.default = answer.question.points if answer.is_correct else 0
             grading_forms[answer.id] = form
-    
+      # Process forms
     if request.method == 'POST':
-        try:
-            # Process each form and update the answers
+        try:            # Process each form and update the answers
             for answer in answers:
-                if answer.question.question_type != 'mcq':
+                if answer.question.question_type != 'mcq' and answer.id in grading_forms:
                     form = grading_forms[answer.id]
                     if form.validate_on_submit():
                         answer.is_correct = form.is_correct.data
@@ -565,14 +597,14 @@ def view_exam_reviews(exam_id):
 def review_queue():
     """Show all pending submissions that need grading"""
     # Get all completed attempts for exams created by the current teacher
-    # that haven't been graded yet (score is None)
+    # that haven't been graded yet
     pending_attempts = (ExamAttempt.query
-                        .join(Exam, ExamAttempt.exam_id == Exam.id)
-                        .filter(Exam.creator_id == current_user.id)
-                        .filter(ExamAttempt.status == 'completed')
-                        .filter(ExamAttempt.score.is_(None))
-                        .order_by(ExamAttempt.submitted_at.desc())
-                        .all())
+                       .join(Exam, ExamAttempt.exam_id == Exam.id)
+                       .filter(Exam.creator_id == current_user.id)
+                       .filter(ExamAttempt.is_completed == True)
+                       .filter(ExamAttempt.is_graded == False)
+                       .order_by(ExamAttempt.completed_at.desc())
+                       .all())
     
     return render_template(
         'teacher/review_queue.html',
@@ -588,11 +620,10 @@ def view_analytics():
     # Get some basic statistics
     total_exams = Exam.query.filter_by(creator_id=current_user.id).count()
     published_exams = Exam.query.filter_by(creator_id=current_user.id, is_published=True).count()
-    
-    # Get attempt statistics
+      # Get attempt statistics
     attempt_stats = db.session.query(
         func.count(ExamAttempt.id).label('total_attempts'),
-        func.count(case([(ExamAttempt.status == 'completed', 1)])).label('completed_attempts'),
+        func.count(case([(ExamAttempt.is_completed == True, 1)])).label('completed_attempts'),
         func.avg(ExamAttempt.score).label('average_score')
     ).join(Exam).filter(Exam.creator_id == current_user.id).first()
     
@@ -792,6 +823,21 @@ def take_exam(exam_id):
     exam = Exam.query.get_or_404(exam_id)
     now = datetime.utcnow()
     
+    # Log attempt to start exam
+    ActivityLog.log_activity(
+        user_id=current_user.id,
+        action="start_exam",
+        category="attempt",
+        details={
+            'exam_id': exam.id,
+            'exam_title': exam.title,
+            'creator_id': exam.creator_id,
+            'timestamp': now.isoformat()
+        },
+        ip_address=request.remote_addr,
+        user_agent=str(request.user_agent)
+    )
+    
     # Check if exam is published
     if not exam.is_published:
         flash('This exam is not available for taking.', 'warning')
@@ -933,10 +979,8 @@ def take_exam(exam_id):
                     'error': 'database_error'
                 }), 500
         
-        try:
-            # Save final answers
-            save_answers(request.form, attempt)
-            
+        try:            # Save final answers
+            save_answers(request.form, attempt, is_final_submission=True)
             # Mark attempt as completed
             attempt.is_completed = True
             attempt.submitted_at = submission_time
@@ -1000,9 +1044,10 @@ def take_exam(exam_id):
     )
 
 
-def save_answers(form_data, attempt):
+def save_answers(form_data, attempt, is_final_submission=False):
     """
-    Save or update answers for an exam attempt
+    Save or update answers for an exam attempt.
+    If is_final_submission is True, also update submitted_at timestamp.
     """
     saved_question_ids = set()
     
@@ -1400,4 +1445,23 @@ def export_gradebook():
             'Content-Disposition': f'attachment; filename="{filename}"',
             'Cache-Control': 'no-cache'
         }
+    )
+
+
+@teacher_bp.route('/attempts/<int:attempt_id>')
+@login_required
+@teacher_required
+def view_attempt(attempt_id):
+    """View details of a single exam attempt"""
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    # Make sure the teacher created this exam
+    if attempt.exam.creator_id != current_user.id:
+        abort(403)
+        
+    answers = attempt.answers.all()
+    return render_template(
+        'teacher/view_attempt.html',
+        attempt=attempt,
+        answers=answers
     )

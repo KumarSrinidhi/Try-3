@@ -1,24 +1,65 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request, abort
+from flask import Blueprint, render_template, redirect, url_for, flash, request, abort, current_app
 from flask_login import login_required, current_user
 from sqlalchemy.exc import SQLAlchemyError
-from app.models import db, User, Exam, ExamAttempt
-from app.forms import UserEditForm, CreateUserForm, ExamForm
+from .decorators import admin_required
+from .models import (
+    db, User, Exam, ExamAttempt, Question, QuestionOption, 
+    Answer, ExamReview, ActivityLog
+)
+from .forms import UserEditForm, CreateUserForm, ExamForm
 from werkzeug.security import generate_password_hash
-from functools import wraps
 import json
 from datetime import datetime
 
 # Create blueprint
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 
-# Admin required decorator
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin():
-            abort(403)
-        return f(*args, **kwargs)
-    return decorated_function
+
+@admin_bp.route('/activity-logs')
+@login_required
+@admin_required
+def activity_logs():
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    
+    # Filter parameters
+    user_id = request.args.get('user_id', type=int)
+    category = request.args.get('category')
+    action = request.args.get('action')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    # Base query
+    query = ActivityLog.query.join(User).order_by(ActivityLog.created_at.desc())
+    
+    # Apply filters
+    if user_id:
+        query = query.filter(ActivityLog.user_id == user_id)
+    if category:
+        query = query.filter(ActivityLog.category == category)
+    if action:
+        query = query.filter(ActivityLog.action == action)
+    if start_date:
+        query = query.filter(ActivityLog.created_at >= start_date)
+    if end_date:
+        query = query.filter(ActivityLog.created_at <= end_date)
+    
+    # Pagination
+    logs = query.paginate(page=page, per_page=per_page)
+    
+    # Get unique categories and actions for filter dropdowns
+    categories = db.session.query(ActivityLog.category).distinct().all()
+    actions = db.session.query(ActivityLog.action).distinct().all()
+    users = User.query.order_by(User.username).all()
+    
+    return render_template(
+        'admin/activity_logs.html',
+        logs=logs,
+        categories=categories,
+        actions=actions,
+        users=users
+    )
+
 
 @admin_bp.route('/users/<int:user_id>/edit', methods=['GET', 'POST'])
 @login_required
@@ -77,16 +118,58 @@ def delete_user(user_id):
 @admin_required
 def delete_exam(exam_id):
     exam = Exam.query.get_or_404(exam_id)
-    
     try:
-        # Delete all related attempts first
-        ExamAttempt.query.filter_by(exam_id=exam.id).delete()
+        exam_details = {
+            'exam_id': exam.id,
+            'title': exam.title,
+            'creator_id': exam.creator_id,
+            'is_published': exam.is_published,
+            'group_id': exam.group_id
+        }
+        
+        # Delete in correct order to handle foreign key constraints
+        # 1. Delete answers from exam attempts
+        for attempt in ExamAttempt.query.filter_by(exam_id=exam.id).all():
+            db.session.query(Answer).filter_by(attempt_id=attempt.id).delete()
+        
+        # 2. Delete exam attempts
+        attempts_count = ExamAttempt.query.filter_by(exam_id=exam.id).delete()
+        
+        # 3. Delete exam reviews
+        reviews_count = db.session.query(ExamReview).filter_by(exam_id=exam.id).delete()
+        
+        # 4. Delete question options and questions
+        questions_count = 0
+        for question in Question.query.filter_by(exam_id=exam.id).all():
+            questions_count += 1
+            db.session.query(QuestionOption).filter_by(question_id=question.id).delete()
+        Question.query.filter_by(exam_id=exam.id).delete()
+        
+        # 5. Finally delete the exam
         db.session.delete(exam)
         db.session.commit()
+        
+        # Log exam deletion
+        ActivityLog.log_activity(
+            user_id=current_user.id,
+            action="delete_exam",
+            category="exam",
+            details={
+                **exam_details,
+                'deleted_items': {
+                    'attempts': attempts_count,
+                    'reviews': reviews_count,
+                    'questions': questions_count
+                }
+            },
+            ip_address=request.remote_addr,
+            user_agent=str(request.user_agent)
+        )
+        
         flash('Exam deleted successfully!', 'success')
     except SQLAlchemyError as e:
         db.session.rollback()
-        flash('Error deleting exam.', 'danger')
+        flash('Error deleting exam: ' + str(e), 'danger')
     
     return redirect(url_for('main.admin_dashboard'))
 
@@ -241,10 +324,9 @@ def system_logs():
 @admin_required
 def system_settings():
     if request.method == 'POST':
-        try:
-            # Update system settings
-            app.config['MAIL_SERVER'] = request.form.get('mail_server')
-            app.config['MAIL_PORT'] = int(request.form.get('mail_port'))
+        try:            # Update system settings
+            current_app.config['MAIL_SERVER'] = request.form.get('mail_server')
+            current_app.config['MAIL_PORT'] = int(request.form.get('mail_port'))
             # Add more settings as needed
             
             flash('Settings updated successfully!', 'success')

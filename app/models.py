@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import db, login_manager
@@ -14,13 +14,18 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
-    exams_created = db.relationship('Exam', foreign_keys='Exam.creator_id', lazy='dynamic')
+    created_exams = db.relationship('Exam', foreign_keys='Exam.creator_id', 
+                                  back_populates='creator', lazy='dynamic', overlaps="exams_created")
     exam_attempts = db.relationship('ExamAttempt', backref='student', lazy='dynamic')
-    exam_reviews = db.relationship('ExamReview', foreign_keys='ExamReview.student_id', backref=db.backref('reviewer', lazy='joined'), lazy='dynamic')
-    notifications = db.relationship('Notification', foreign_keys='Notification.user_id', backref=db.backref('notification_user', lazy='joined'), lazy='dynamic')
+    exam_reviews = db.relationship('ExamReview', foreign_keys='ExamReview.student_id', 
+                                 backref=db.backref('reviewer', lazy='joined'), lazy='dynamic')
+    notifications = db.relationship('Notification', foreign_keys='Notification.user_id', 
+                                  backref=db.backref('notification_user', lazy='joined'), lazy='dynamic')
     security_logs = db.relationship('SecurityLog', backref='user', lazy='dynamic')
-    owned_groups = db.relationship('Group', foreign_keys='Group.teacher_id', lazy='dynamic')
-    joined_groups = db.relationship('Group', secondary='group_membership', lazy='dynamic')
+    owned_groups = db.relationship('Group', foreign_keys='Group.teacher_id', 
+                                 back_populates='teacher', lazy='dynamic', overlaps="owned_classes")
+    joined_groups = db.relationship('Group', secondary='group_membership', 
+                                  back_populates='students', lazy='dynamic', overlaps="enrolled_groups")
     
     def set_password(self, password):
         # Using PBKDF2-SHA256 as specified
@@ -51,48 +56,25 @@ class Exam(db.Model):
     is_published = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
+    # Availability settings
+    available_from = db.Column(db.DateTime, nullable=True)  # When the exam becomes available
+    available_until = db.Column(db.DateTime, nullable=True)  # When the exam expires
+    
     # Security settings
     require_lockdown = db.Column(db.Boolean, default=True)  # Require secure browser
-    allow_calculator = db.Column(db.Boolean, default=False)
+    allow_calculator = db.Column(db.Boolean, default=False)  
     allow_scratch_pad = db.Column(db.Boolean, default=True)
     randomize_questions = db.Column(db.Boolean, default=True)
     one_question_at_time = db.Column(db.Boolean, default=False)
     prevent_copy_paste = db.Column(db.Boolean, default=True)
     require_webcam = db.Column(db.Boolean, default=False)
-    allow_backward_navigation = db.Column(db.Boolean, default=True)
-    show_remaining_time = db.Column(db.Boolean, default=True)
-    auto_submit = db.Column(db.Boolean, default=True)
     
-    # Enhanced security settings
-    require_face_verification = db.Column(db.Boolean, default=False)  # Verify student face before exam
-    proctor_monitoring = db.Column(db.Boolean, default=False)  # Enable live proctoring
-    monitor_screen_share = db.Column(db.Boolean, default=False)  # Require screen sharing
-    periodic_checks = db.Column(db.Integer, default=0)  # Number of minutes between checks (0 = disabled)
-    detect_browser_exit = db.Column(db.Boolean, default=True)  # Track if browser is closed/switched
-    max_warnings = db.Column(db.Integer, default=3)  # Max number of warnings before auto-submit
-    block_virtual_machines = db.Column(db.Boolean, default=True)  # Block access from VMs
-    browser_fullscreen = db.Column(db.Boolean, default=True)  # Require fullscreen mode
-    restrict_keyboard = db.Column(db.Boolean, default=True)  # Block keyboard shortcuts
-    block_external_displays = db.Column(db.Boolean, default=True)  # Block external monitors
-    
-    # Access settings
-    access_code = db.Column(db.String(10), nullable=True)
-    allowed_ip_range = db.Column(db.String(100), nullable=True)  # Allowed IP range
-    available_from = db.Column(db.DateTime, nullable=True)
-    available_until = db.Column(db.DateTime, nullable=True)
-    max_attempts = db.Column(db.Integer, default=1)
-    
-    # Proctor settings
-    proctor_instructions = db.Column(db.Text, nullable=True)  # Instructions for proctors
-    proctor_notes = db.Column(db.Text, nullable=True)  # Notes visible only to proctors
-    max_students_per_proctor = db.Column(db.Integer, default=20)  # Max students per proctor
-    proctor_join_before = db.Column(db.Integer, default=15)  # Minutes before exam starts
-      # Relationships
+    # Relationships with proper overlaps
+    creator = db.relationship('User', back_populates='created_exams', foreign_keys=[creator_id], overlaps="exams_created")
+    group = db.relationship('Group', back_populates='exams', foreign_keys=[group_id], overlaps="class_group")
     questions = db.relationship('Question', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     attempts = db.relationship('ExamAttempt', backref='exam', lazy='dynamic', cascade='all, delete-orphan')
     reviews = db.relationship('ExamReview', backref='exam', lazy='dynamic')
-    creator = db.relationship('User', backref='created_exams', foreign_keys=[creator_id])
-    group = db.relationship('Group', foreign_keys=[group_id])
     
     def get_average_rating(self):
         """Calculate the average rating for this exam based on student reviews"""
@@ -102,6 +84,30 @@ class Exam(db.Model):
         
         total = sum(review.rating for review in reviews)
         return round(total / len(reviews), 1)
+    
+    def is_active(self):
+        """Check if the exam is currently active (within the available time window)"""
+        now = datetime.utcnow()
+        if not self.available_from or not self.available_until:
+            return self.is_published
+        return self.is_published and self.available_from <= now <= self.available_until
+    
+    def is_upcoming(self):
+        """Check if the exam is scheduled for a future date"""
+        now = datetime.utcnow()
+        if not self.available_from:
+            return False
+        return self.is_published and self.available_from > now
+    
+    @property
+    def start_time(self):
+        """Alias for available_from for template compatibility"""
+        return self.available_from
+        
+    @property
+    def end_time(self):
+        """Alias for available_until for template compatibility"""
+        return self.available_until
 
 
 class Question(db.Model):
@@ -150,7 +156,11 @@ class ExamAttempt(db.Model):
     focus_losses = db.Column(db.Integer, default=0)
     warning_count = db.Column(db.Integer, default=0)
     last_check_time = db.Column(db.DateTime, nullable=True)
+    submitted_at = db.Column(db.DateTime, nullable=True)
     environment_verified = db.Column(db.Boolean, default=False)
+    submission_ip = db.Column(db.String(45), nullable=True)  # IP at submission time
+    submission_location = db.Column(db.String(100), nullable=True)  # Geolocation at submission
+    time_zone = db.Column(db.String(50), nullable=True)  # Student's timezone
     
     # Browser State
     is_fullscreen = db.Column(db.Boolean, default=False)
@@ -158,38 +168,140 @@ class ExamAttempt(db.Model):
     webcam_active = db.Column(db.Boolean, default=False)
     screen_share_active = db.Column(db.Boolean, default=False)
     
-    # Event Logs 
+    # Event Logs with size limits and structure validation
     security_events = db.Column(db.JSON, nullable=True)
     browser_events = db.Column(db.JSON, nullable=True)
     warning_events = db.Column(db.JSON, nullable=True)
-    verification_status = db.Column(db.Enum('pending', 'approved', 'flagged', name='verification_status_enum'), default='pending')
-
+    verification_status = db.Column(db.Enum('pending', 'approved', 'flagged', 'auto_flagged', name='verification_status_enum'), default='pending')
+    server_side_checks = db.Column(db.JSON, nullable=True)  # Server-side security validations
+    
+    # Version control for answers
+    answer_version = db.Column(db.Integer, default=1, nullable=False)
+    last_sync_time = db.Column(db.DateTime, nullable=True)
+    client_timestamp = db.Column(db.DateTime, nullable=True)  # Client-reported time
+    
     # Relationships
     answers = db.relationship('Answer', backref='attempt', lazy='dynamic', cascade='all, delete-orphan')
     
+    # Add indexes for common queries
+    __table_args__ = (
+        db.Index('idx_exam_time', 'exam_id', 'started_at'),
+        db.Index('idx_student_grading', 'student_id', 'is_graded'),
+        db.Index('idx_verification', 'verification_status'),
+        db.Index('idx_security', 'warning_count'),
+        db.UniqueConstraint('exam_id', 'student_id', 'answer_version', name='uq_attempt_version')
+    )
+    
     def calculate_score(self):
         """Calculate the total score for this attempt"""
-        total_points = db.session.query(db.func.sum(Question.points)).filter(Question.exam_id == self.exam_id).scalar() or 0
-        earned_points = 0
-        
-        for answer in self.answers:
-            if answer.is_correct:
-                earned_points += answer.question.points
-        
-        return {
-            'earned': earned_points,
-            'total': total_points,
-            'percentage': (earned_points / total_points * 100) if total_points > 0 else 0
-        }
+        # Use a transaction to ensure consistent score calculation
+        try:
+            with db.session.begin_nested():
+                total_points = db.session.query(db.func.sum(Question.points)).filter(Question.exam_id == self.exam_id).scalar() or 0
+                earned_points = 0
+                
+                # Get all answers in one query to avoid n+1 problem
+                answers_with_points = db.session.query(
+                    Answer.is_correct,
+                    Question.points
+                ).join(Question).filter(
+                    Answer.attempt_id == self.id
+                ).all()
+                
+                for is_correct, points in answers_with_points:
+                    if is_correct:
+                        earned_points += points
+                
+                # Calculate percentage with proper decimal handling
+                percentage = round((earned_points / total_points * 100), 2) if total_points > 0 else 0
+                
+                return {
+                    'earned': earned_points,
+                    'total': total_points,
+                    'percentage': percentage
+                }
+        except Exception as e:
+            db.session.rollback()
+            raise ValueError(f"Error calculating score: {str(e)}")
     
     @property
     def needs_grading(self):
         """Check if this attempt has any non-MCQ questions that need grading"""
-        # Get all answers for non-MCQ questions
-        non_mcq_answers = [answer for answer in self.answers if answer.question.question_type != 'mcq']
+        # Use efficient query to check for ungraded non-MCQ answers
+        return db.session.query(
+            Answer.id
+        ).join(Question).filter(
+            Answer.attempt_id == self.id,
+            Question.question_type != 'mcq',
+            Answer.is_correct.is_(None)
+        ).first() is not None
+    
+    def validate_submission(self, submission_time, client_time=None):
+        """
+        Validate a submission attempt with comprehensive checks
+        Returns (is_valid, message)
+        """
+        if self.is_completed:
+            return False, "Attempt already completed"
+            
+        now = datetime.utcnow()
         
-        # If there are non-MCQ answers and not all of them have been graded
-        return len(non_mcq_answers) > 0 and any(answer.is_correct is None for answer in non_mcq_answers)
+        # Check exam availability window
+        if self.exam.available_until and now > self.exam.available_until:
+            return False, "Exam availability window has expired"
+            
+        # Validate time limit
+        time_limit = self.started_at + timedelta(minutes=self.exam.time_limit_minutes)
+        grace_period = timedelta(minutes=2)  # 2 minute grace period
+        
+        if submission_time > (time_limit + grace_period):
+            return False, "Time limit exceeded"
+            
+        # Check for suspicious time differences
+        if client_time:
+            time_diff = abs((client_time - now).total_seconds())
+            if time_diff > 300:  # 5 minutes
+                return False, "Client time significantly differs from server time"
+                
+        # Validate security requirements
+        if self.exam.require_lockdown and not self.secure_browser_active:
+            return False, "Secure browser requirement not met"
+            
+        if self.exam.require_webcam and not self.webcam_active:
+            return False, "Webcam requirement not met"
+            
+        if self.warning_count > self.exam.max_warnings:
+            return False, "Maximum warning count exceeded"
+            
+        return True, "Submission validated"
+    
+    def log_event(self, event_type, data, severity='info'):
+        """Log a security or browser event with proper validation"""
+        if len(str(data)) > 10000:  # Limit event data size
+            data = {'error': 'Event data too large', 'truncated': True}
+            
+        timestamp = datetime.utcnow()
+        event = {
+            'type': event_type,
+            'timestamp': timestamp.isoformat(),
+            'data': data,
+            'severity': severity
+        }
+        
+        if event_type.startswith('security_'):
+            self.security_events = self.security_events or []
+            self.security_events.append(event)
+        elif event_type.startswith('browser_'):
+            self.browser_events = self.browser_events or []
+            self.browser_events.append(event)
+        elif event_type.startswith('warning_'):
+            self.warning_events = self.warning_events or []
+            self.warning_events.append(event)
+            self.warning_count += 1
+            
+        # Auto-flag if too many events
+        if self.warning_count >= self.exam.max_warnings:
+            self.verification_status = 'auto_flagged'
 
 
 class Answer(db.Model):
@@ -277,14 +389,14 @@ class Group(db.Model):
     teacher_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     archived = db.Column(db.Boolean, default=False)  # For archiving old classes
     
-    # Link to User model through GroupMembership for students
-    # Removed the backref to prevent circular references
-    students = db.relationship('User', secondary='group_membership', lazy='dynamic')
-      # Direct link to teacher
-    teacher = db.relationship('User', backref=db.backref('owned_classes', lazy='dynamic'), foreign_keys=[teacher_id])
-    
-    # Link to exams
-    exams = db.relationship('Exam', backref='class_group', lazy='dynamic', foreign_keys='Exam.group_id')
+    # Relationships with proper overlaps
+    students = db.relationship('User', secondary='group_membership', 
+                             back_populates='joined_groups', lazy='dynamic', 
+                             overlaps="joined_groups")
+    teacher = db.relationship('User', back_populates='owned_groups', 
+                            foreign_keys=[teacher_id], overlaps="owned_classes")
+    exams = db.relationship('Exam', back_populates='group', lazy='dynamic', 
+                          foreign_keys='Exam.group_id', overlaps="class_group")
     
     def generate_code(self):
         """Generate a unique joining code"""
@@ -337,3 +449,38 @@ class GroupMembership(db.Model):
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
+
+
+class ActivityLog(db.Model):
+    """Model for tracking all user activities"""
+    __tablename__ = 'activity_logs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    action = db.Column(db.String(100), nullable=False)
+    category = db.Column(db.String(50), nullable=False)  # e.g., 'exam', 'question', 'auth', etc.
+    details = db.Column(db.JSON, nullable=True)  # Store additional context as JSON
+    ip_address = db.Column(db.String(45), nullable=True)
+    user_agent = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    user = db.relationship('User', backref=db.backref('activity_logs', lazy=True))
+
+    @classmethod
+    def log_activity(cls, user_id, action, category, details=None, ip_address=None, user_agent=None):
+        """Create and save a new activity log entry"""
+        log = cls(
+            user_id=user_id,
+            action=action,
+            category=category,
+            details=details,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        db.session.add(log)
+        try:
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error logging activity: {str(e)}")

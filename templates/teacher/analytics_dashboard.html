@@ -117,8 +117,7 @@
                     {% if recent_activity %}
                         <div class="activity-list">
                             {% for activity in recent_activity %}
-                                <div class="activity-item">
-                                    <span class="text-muted small">{{ activity.submitted_at.strftime('%b %d, %Y %H:%M') }}</span>
+                                <div class="activity-item">                                    <span class="text-muted small">{{ activity.submitted_at|format_datetime('%b %d, %Y %H:%M') }}</span>
                                     <p class="mb-0">
                                         <strong>{{ activity.username }}</strong> completed
                                         <strong>{{ activity.title }}</strong>

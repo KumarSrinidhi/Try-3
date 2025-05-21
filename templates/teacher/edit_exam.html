@@ -89,43 +89,48 @@
                 <h5 class="mb-0">Add New Question</h5>
             </div>
             <div class="card-body">                <form method="POST" action="{{ url_for('teacher.edit_exam', exam_id=exam.id) }}">
-                    {{ form.csrf_token }}
+                    {{ question_form.csrf_token }}
+                    <input type="hidden" name="add_question" value="1">
                     
                     <div class="row mb-3">
                         <div class="col-md-8">
-                            {{ form.question_text.label(class="form-label") }}
-                            {{ form.question_text(class="form-control", rows=3) }}
-                            {% if form.question_text.errors %}
+                            {{ question_form.question_text.label(class="form-label") }}
+                            {{ question_form.question_text(class="form-control", rows=3) }}
+                            {% if question_form.question_text.errors %}
                                 <div class="text-danger">
-                                    {% for error in form.question_text.errors %}
+                                    {% for error in question_form.question_text.errors %}
                                         <small>{{ error }}</small>
                                     {% endfor %}
                                 </div>
                             {% endif %}
                         </div>
                     <div class="col-md-4">
-                            <div class="mb-3">
-                                {{ form.question_type.label(class="form-label") }}
-                                {{ form.question_type(class="form-select", onchange="toggleQuestionType()") }}
+                            <div class="mb-3">                                {{ question_form.question_type.label(class="form-label") }}
+                                {{ question_form.question_type(class="form-select", onchange="toggleQuestionType()") }}
                                 <div id="questionTypeHelp" class="form-text mt-2"></div>
                             </div>
                             <div class="mb-3">
-                                {{ form.points.label(class="form-label") }}
-                                {{ form.points(class="form-control") }}
+                                {{ question_form.points.label(class="form-label") }}
+                                {{ question_form.points(class="form-control") }}
                             </div>
                         </div>
-                    </div>
-                    
-                    {% if form.question_type.errors %}
+                    </div>                      {% if question_form.question_type.errors %}
                         <div class="alert alert-danger">
-                            {% for error in form.question_type.errors %}
+                            {% for error in question_form.question_type.errors %}
                                 {{ error }}<br>
                             {% endfor %}
                         </div>
                     {% endif %}
-                                                  <!-- MCQ Options -->
-                    <div id="mcqOptions" style="display: none;">
-                        <h5 class="mt-3 mb-3">Answer Options</h5>                        <div class="mb-2 alert alert-info">
+                    {% if question_form.points.errors %}
+                        <div class="alert alert-danger">
+                            {% for error in question_form.points.errors %}
+                                {{ error }}<br>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                              <!-- MCQ Options -->
+                    <div id="mcqOptions" style="display: none;" class="mt-3">
+                        <h5 class="mb-3">Answer Options</h5><div class="mb-2 alert alert-info">
                             <i class="fas fa-info-circle"></i>
                             For MCQ questions:
                             <ul class="mb-0">
@@ -134,10 +139,9 @@
                                 <li>Additional options are optional (leave empty if not needed)</li>
                                 <li>Empty options will be ignored</li>
                             </ul>
-                        </div>
-                        {% if form.errors %}
+                        </div>                        {% if question_form.errors %}
                             <div class="alert alert-danger">
-                                {% for field, errors in form.errors.items() %}
+                                {% for field, errors in question_form.errors.items() %}
                                     {% for error in errors %}
                                         <p class="mb-0">{{ error }}</p>
                                     {% endfor %}
@@ -145,16 +149,16 @@
                             </div>
                         {% endif %}
                         
-                        {% if form.errors.get('options') %}
+                        {% if question_form.errors.get('options') %}
                             <div class="alert alert-danger">
-                                {% for error in form.errors.options %}
+                                {% for error in question_form.errors.options %}
                                     {{ error }}<br>
                                 {% endfor %}
                             </div>
                         {% endif %}
                         
                         <div class="row">
-                            {% for option_form in form.options %}
+                            {% for option_form in question_form.options %}
                                 <div class="col-md-6 mb-2">
                                     <div class="card {% if loop.index <= 2 %}border-primary{% endif %}">
                                         <div class="card-header {% if loop.index <= 2 %}bg-primary text-white{% endif %}">

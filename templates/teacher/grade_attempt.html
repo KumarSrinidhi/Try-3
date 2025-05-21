@@ -26,18 +26,17 @@
                     <li class="list-group-item d-flex justify-content-between">
                         <span>Student:</span>
                         <span class="fw-bold">{{ attempt.student.username }}</span>
-                    </li>
-                    <li class="list-group-item d-flex justify-content-between">
+                    </li>                    <li class="list-group-item d-flex justify-content-between">
                         <span>Started:</span>
-                        <span>{{ attempt.started_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span>{{ attempt.started_at|datetime }}</span>
                     </li>
                     <li class="list-group-item d-flex justify-content-between">
                         <span>Completed:</span>
-                        <span>{{ attempt.completed_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span>{{ attempt.completed_at|datetime }}</span>
                     </li>
                     <li class="list-group-item d-flex justify-content-between">
                         <span>Time taken:</span>
-                        <span>{{ (attempt.completed_at - attempt.started_at).total_seconds() // 60 }} minutes</span>
+                        <span>{{ attempt.started_at|timedelta(attempt.completed_at) }}</span>
                     </li>
                     <li class="list-group-item d-flex justify-content-between">
                         <span>MCQ score:</span>

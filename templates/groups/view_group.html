@@ -109,17 +109,17 @@
                 <div class="card-body">
                     <p><strong>Teacher:</strong> {{ group.teacher.username }}</p>
                     <p><strong>Created:</strong> {{ group.created_at.strftime('%Y-%m-%d') }}</p>
-                    <p><strong>Members:</strong> {{ group.members|length }}</p>
-                    {% if is_teacher %}
+                    <p><strong>Members:</strong> {{ group.members|length }}</p>                    {% if is_teacher %}
                         <form action="{{ url_for('group.archive_group', group_id=group.id) }}" method="POST" class="mb-2">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-warning w-100"
                                     onclick="return confirm('Are you sure you want to archive this class?')">
                                 {% if group.archived %}Unarchive{% else %}Archive{% endif %} Class
                             </button>
                         </form>
-                    {% endif %}
-                    {% if not is_teacher %}
+                    {% endif %}{% if not is_teacher %}
                         <form action="{{ url_for('group.leave_group', group_id=group.id) }}" method="POST">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-danger w-100"
                                     onclick="return confirm('Are you sure you want to leave this class?')">
                                 Leave Class

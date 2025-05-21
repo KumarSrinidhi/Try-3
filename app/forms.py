@@ -78,6 +78,7 @@ class ExamForm(FlaskForm):
         Length(min=5, max=255)
     ])
     description = TextAreaField('Description')
+    group_id = SelectField('Class', coerce=int, validators=[DataRequired(message="Please select a class")])  # Make class selection required
     time_limit_minutes = IntegerField('Time Limit (minutes)', validators=[
         DataRequired(),
         NumberRange(min=5, max=300, message='Time limit must be between 5 and 300 minutes')
@@ -168,6 +169,48 @@ class ExamForm(FlaskForm):
     is_published = BooleanField('Publish Immediately')
     submit = SubmitField('Create Exam')
 
+    def validate_time_limit_minutes(self, field):
+        """Validate time limit against availability window"""
+        if field.data < 5:
+            raise ValidationError('Time limit must be at least 5 minutes')
+        if field.data > 300:
+            raise ValidationError('Time limit cannot exceed 300 minutes')
+            
+        # If availability window is set, validate time limit fits within it
+        if self.available_from.data and self.available_until.data:
+            window_minutes = (self.available_until.data - self.available_from.data).total_seconds() / 60
+            if field.data > window_minutes:
+                raise ValidationError('Time limit cannot exceed availability window')
+                
+    def validate_available_from(self, field):
+        """Validate exam start time"""
+        if field.data:
+            now = datetime.utcnow()
+            if field.data < now:
+                raise ValidationError('Start time must be in the future')
+                
+    def validate_available_until(self, field):
+        """Validate exam end time"""
+        if field.data and self.available_from.data:
+            if field.data <= self.available_from.data:
+                raise ValidationError('End time must be after start time')
+                
+            # Ensure reasonable duration
+            duration = (field.data - self.available_from.data).total_seconds() / 3600  # hours
+            if duration > 168:  # 1 week
+                raise ValidationError('Exam cannot be available for more than 1 week')
+                
+    def validate_max_attempts(self, field):
+        """Validate maximum attempts"""
+        if field.data and field.data < 1:
+            raise ValidationError('Must allow at least 1 attempt')
+            
+        if self.group_id.data:
+            from app.models import Group
+            group = Group.query.get(self.group_id.data)
+            if group and field.data > group.students.count() * 2:
+                raise ValidationError('Maximum attempts seems unusually high for class size')
+    
     def validate_available_until(self, field):
         if field.data and self.available_from.data:
             if field.data <= self.available_from.data:
@@ -199,9 +242,11 @@ class QuestionForm(FlaskForm):
     ], default=1)
     options = FieldList(FormField(MCQOptionForm), min_entries=4, max_entries=10)
     submit = SubmitField('Add Question')
-
-    def validate(self):
-        if not super().validate():
+    
+    def validate(self, extra_validators=None):
+        """Custom validation for the question form"""
+        # First run parent class validation with any extra validators
+        if not FlaskForm.validate(self, extra_validators):
             return False
             
         if self.question_text.data and len(self.question_text.data.strip()) < 10:

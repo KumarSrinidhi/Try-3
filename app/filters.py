@@ -12,7 +12,12 @@ def format_datetime(dt, format="%b %d, %Y %I:%M %p"):
         A formatted string representing the datetime
     """
     if dt is None:
-        return ""
+        return "Not completed"
+    if isinstance(dt, str):
+        try:
+            dt = datetime.strptime(dt, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return dt
     return dt.strftime(format)
 
 def timesince(dt, default="just now"):
@@ -58,3 +63,11 @@ def timesince(dt, default="just now"):
     
     years = seconds / 31536000
     return f"{int(years)} year{'s' if years != 1 else ''} ago"
+
+def format_timedelta(start, end):
+    """Format the time difference between two datetime objects"""
+    if start is None or end is None:
+        return "Not available"
+    delta_seconds = (end - start).total_seconds()
+    minutes = int(delta_seconds // 60)
+    return f"{minutes} minutes"

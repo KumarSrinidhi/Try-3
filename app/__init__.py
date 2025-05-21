@@ -29,8 +29,16 @@ def create_app(config_class=Config):
     app = Flask(__name__, 
                 template_folder='../templates',
                 static_folder='../static')
+    
+    # Load configuration
     app.config.from_object(config_class)
-      # Initialize extensions
+    
+    # Register filters
+    from app.filters import format_datetime, timesince
+    app.jinja_env.filters['format_datetime'] = format_datetime
+    app.jinja_env.filters['timesince'] = timesince
+    
+    # Initialize extensions
     db.init_app(app)
     login_manager.init_app(app)
     mail.init_app(app)
@@ -50,17 +58,7 @@ def create_app(config_class=Config):
         return dict(Notification=Notification)
     
     # Register background tasks
-    with app.app_context():
-        from app.background_tasks import register_task, start_scheduler
-        from app.notifications import notify_exam_deadline_approaching
-        
-        # Register the notification task to run every hour
-        register_task(notify_exam_deadline_approaching, 3600, "exam_deadline_notifications")
-        
-        # Start the scheduler in the background
-        start_scheduler(app)
-        
-    # Register blueprints (import here to avoid circular imports)
+    # Register blueprints first to ensure models are fully loaded
     from app.auth import auth_bp
     from app.admin_routes import admin_bp  # Import admin_bp first
     from app.routes import main_bp, teacher_bp, student_bp
@@ -72,6 +70,20 @@ def create_app(config_class=Config):
     app.register_blueprint(student_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(group_bp)
+    
+    # Now initialize background tasks with a fully set up app
+    with app.app_context():
+        from app.background_tasks import register_task, start_scheduler
+        from app.notifications import notify_exam_deadline_approaching
+        
+        # Ensure database is initialized
+        db.create_all()
+        
+        # Register the notification task to run every hour
+        register_task(notify_exam_deadline_approaching, 3600, "exam_deadline_notifications")
+        
+    # Start the scheduler in the background
+        start_scheduler(app)
     
     # Error handlers
     @app.errorhandler(404)
@@ -97,11 +109,11 @@ def create_app(config_class=Config):
     @app.context_processor
     def inject_user():
         return dict(current_user=current_user)
-    
-    # Register template filters
-    from app.filters import timesince, format_datetime
+      # Register template filters
+    from app.filters import timesince, format_datetime, format_timedelta
     app.jinja_env.filters['timesince'] = timesince
-    app.jinja_env.filters['format_datetime'] = format_datetime
+    app.jinja_env.filters['datetime'] = format_datetime  # Register as 'datetime' to match template usage
+    app.jinja_env.filters['timedelta'] = format_timedelta  # Add timedelta filter
     
     return app
 

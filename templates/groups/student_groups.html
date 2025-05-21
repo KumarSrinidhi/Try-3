@@ -22,9 +22,9 @@
                         <div class="card-footer">
                             <div class="d-flex justify-content-between align-items-center">
                                 <a href="{{ url_for('group.view_group', group_id=group.id) }}" 
-                                   class="btn btn-outline-primary btn-sm">View Group</a>
-                                <form action="{{ url_for('group.leave_group', group_id=group.id) }}" 
+                                   class="btn btn-outline-primary btn-sm">View Group</a>                                <form action="{{ url_for('group.leave_group', group_id=group.id) }}" 
                                       method="POST" style="display: inline;">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                     <button type="submit" class="btn btn-outline-danger btn-sm"
                                             onclick="return confirm('Are you sure you want to leave this group?')">
                                         Leave

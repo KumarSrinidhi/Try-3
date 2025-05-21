@@ -4,10 +4,14 @@ from datetime import timedelta
 class Config:
     # Security settings
     SECRET_KEY = os.environ.get('SECRET_KEY') or os.urandom(32)
-    
     # Database settings
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'mysql://root:852456@localhost/exam_platform'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_size': 10,
+        'pool_recycle': 3600,
+        'pool_pre_ping': True
+    }
     
     # Session settings
     PERMANENT_SESSION_LIFETIME = timedelta(hours=2)
