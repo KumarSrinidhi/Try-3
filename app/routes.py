@@ -10,7 +10,7 @@ from sqlalchemy import func, desc
 from sqlalchemy.sql import case
 from functools import wraps
 
-from app.models import db, User, Exam, Question, QuestionOption, ExamAttempt, Answer, ExamReview, Notification
+from app.models import db, User, Exam, Question, QuestionOption, ExamAttempt, Answer, ExamReview, Notification, Group
 from app.forms import (
     ExamForm, QuestionForm, MCQAnswerForm, TextAnswerForm,
     CodeAnswerForm, GradeAnswerForm, ExamReviewForm, ImportQuestionsForm,
@@ -102,12 +102,20 @@ def dashboard():
         
         # Get student's attempts
         attempts = ExamAttempt.query.filter_by(student_id=current_user.id).all()
-        completed_exams = [attempt.exam for attempt in attempts if attempt.is_completed]
+        completed_attempts = [attempt for attempt in attempts if attempt.is_completed]
+        completed_exams = [attempt.exam for attempt in completed_attempts]
+        
+        # Calculate average score for completed exams
+        average_score = 0
+        if completed_attempts:
+            total_score = sum(attempt.score or 0 for attempt in completed_attempts)
+            average_score = total_score / len(completed_attempts)
         
         return render_template(
             'dashboard/student_dashboard.html',
             available_exams=available_exams,
-            completed_exams=completed_exams
+            completed_exams=completed_exams,
+            average_score=average_score
         )
 
 
@@ -782,11 +790,28 @@ def download_template():
 @student_required
 def take_exam(exam_id):
     exam = Exam.query.get_or_404(exam_id)
+    now = datetime.utcnow()
     
     # Check if exam is published
     if not exam.is_published:
         flash('This exam is not available for taking.', 'warning')
         return redirect(url_for('main.dashboard'))
+        
+    # Check if exam is within availability window
+    if exam.available_from and now < exam.available_from:
+        flash(f'This exam is not available yet. It will be available from {exam.available_from}.', 'warning')
+        return redirect(url_for('main.dashboard'))
+        
+    if exam.available_until and now > exam.available_until:
+        flash('This exam is no longer available.', 'danger')
+        return redirect(url_for('main.dashboard'))
+        
+    # Check if the exam is from a group the student is part of
+    if exam.group_id:
+        group = Group.query.get(exam.group_id)
+        if group and current_user not in group.students:
+            flash('You need to join the class to access this exam.', 'warning')
+            return redirect(url_for('group.join_group'))
     
     # Check if student has already completed this exam
     existing_attempt = ExamAttempt.query.filter_by(
@@ -1173,3 +1198,206 @@ def admin_dashboard():
     attempts = ExamAttempt.query.all()
     notifications = Notification.query.order_by(Notification.created_at.desc()).limit(10).all()
     return render_template('dashboard/admin_dashboard.html', users=users, exams=exams, attempts=attempts, notifications=notifications)
+
+@teacher_bp.route('/gradebook', methods=['GET'])
+@login_required
+@teacher_required
+def gradebook():
+    """
+    Display gradebook with student scores across all exams or filtered by group/exam
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    sort_by = request.args.get('sort', 'name')
+    
+    # Get groups taught by this teacher
+    groups = Group.query.filter_by(teacher_id=current_user.id).all()
+    
+    # Get exams created by this teacher
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    # Apply group filter if provided
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        group = None
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exam_list = [exam]
+    else:
+        exam_list = exams_query.all()
+    
+    # Get all attempts for these students and exams
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exam_list]) if exam_list else True
+    )
+    
+    # Sort students based on sort parameter
+    if sort_by == 'name':
+        students.sort(key=lambda s: s.username.lower())
+    elif sort_by == 'needs_grading':
+        # Create a dict to store which students need grading
+        needs_grading = {}
+        for attempt in attempts_query:
+            if not attempt.is_graded and attempt.needs_grading:
+                needs_grading[attempt.student_id] = True
+        
+        # Sort with students needing grading first
+        students.sort(key=lambda s: (0 if needs_grading.get(s.id) else 1, s.username.lower()))
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    return render_template('teacher/gradebook.html',
+        students=students,
+        exam_list=exam_list,
+        attempts=attempts,
+        groups=groups,
+        exams=Exam.query.filter_by(creator_id=current_user.id).all(),
+        group=group,
+        exam=Exam.query.get(exam_id) if exam_id else None,
+        sort_by=sort_by
+    )
+
+
+@teacher_bp.route('/gradebook/export', methods=['GET'])
+@login_required
+@teacher_required
+def export_gradebook():
+    """
+    Export gradebook as CSV file
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    
+    # Build the query based on filters
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exams = [exam]
+    else:
+        exams = exams_query.all()
+    
+    # Get all attempts
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exams]) if exams else True
+    )
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    # Create CSV response
+    import csv
+    from io import StringIO
+    
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # Write header row
+    header = ['Student', 'Email']
+    for exam in exams:
+        header.append(exam.title)
+    header.append('Average')
+    writer.writerow(header)
+    
+    # Write data rows
+    for student in students:
+        row = [student.username, student.email]
+        
+        # Add scores for each exam
+        total_score = 0
+        score_count = 0
+        
+        for exam in exams:
+            attempt = attempts.get((student.id, exam.id))
+            if attempt and attempt.is_graded:
+                row.append(f"{attempt.score:.1f}%")
+                total_score += attempt.score
+                score_count += 1
+            else:
+                row.append("Not Attempted" if not attempt else "Needs Grading")
+        
+        # Calculate average
+        if score_count > 0:
+            average = total_score / score_count
+            row.append(f"{average:.1f}%")
+        else:
+            row.append("N/A")
+        
+        writer.writerow(row)
+    
+    # Set response headers
+    from flask import Response
+    group_name = Group.query.get(group_id).name if group_id else "All-Classes"
+    filename = f"gradebook-{group_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'no-cache'
+        }
+    )

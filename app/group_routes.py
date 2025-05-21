@@ -4,6 +4,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.models import db, Group, GroupMembership, User, Exam
 from app.forms import CreateGroupForm, JoinGroupForm
 from app.decorators import teacher_required
+from app.notifications import notify_student_group_exams
 
 group_bp = Blueprint('group', __name__, url_prefix='/groups')
 
@@ -91,7 +92,6 @@ def join_group():
         return redirect(url_for('group.list_groups'))
     
     form = JoinGroupForm()
-    
     if form.validate_on_submit():
         group = Group.query.filter_by(code=form.code.data.upper()).first()
         
@@ -99,13 +99,17 @@ def join_group():
             flash('Invalid group code.', 'danger')
             return redirect(url_for('group.join_group'))
         
-        if current_user in group.members:
+        if current_user in group.students:
             flash('You are already a member of this group.', 'info')
             return redirect(url_for('group.view_group', group_id=group.id))
         
         try:
-            group.members.append(current_user)
+            group.students.append(current_user)
             db.session.commit()
+            
+            # Notify student about available exams in this group
+            notify_student_group_exams(current_user.id, group.id)
+            
             flash(f'Successfully joined {group.name}!', 'success')
             return redirect(url_for('group.view_group', group_id=group.id))
             
@@ -126,12 +130,12 @@ def leave_group(group_id):
     
     group = Group.query.get_or_404(group_id)
     
-    if current_user not in group.members:
+    if current_user not in group.students:
         flash('You are not a member of this group.', 'warning')
         return redirect(url_for('group.list_groups'))
     
     try:
-        group.members.remove(current_user)
+        group.students.remove(current_user)
         db.session.commit()
         flash(f'Successfully left {group.name}.', 'success')
     except SQLAlchemyError as e:
@@ -148,7 +152,7 @@ def list_members(group_id):
     group = Group.query.get_or_404(group_id)
     
     # Check if user has access to the group
-    if not (current_user.id == group.teacher_id or current_user in group.members):
+    if not (current_user.id == group.teacher_id or current_user in group.students):
         flash('You do not have access to this group.', 'warning')
         return redirect(url_for('group.list_groups'))
     
@@ -173,7 +177,7 @@ def remove_member(group_id, user_id):
     user = User.query.get_or_404(user_id)
     
     try:
-        group.members.remove(user)
+        group.students.remove(user)
         db.session.commit()
         flash(f'Successfully removed {user.username} from {group.name}.', 'success')
     except SQLAlchemyError as e:

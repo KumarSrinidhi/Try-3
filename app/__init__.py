@@ -4,6 +4,7 @@ from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from flask_mail import Mail
 from flask_wtf.csrf import CSRFProtect
+from datetime import timedelta
 
 from config import Config
 
@@ -42,6 +43,23 @@ def create_app(config_class=Config):
             if token:
                 return token
 
+    # Add context processor to make models available in templates
+    @app.context_processor
+    def inject_models():
+        from app.models import Notification
+        return dict(Notification=Notification)
+    
+    # Register background tasks
+    with app.app_context():
+        from app.background_tasks import register_task, start_scheduler
+        from app.notifications import notify_exam_deadline_approaching
+        
+        # Register the notification task to run every hour
+        register_task(notify_exam_deadline_approaching, 3600, "exam_deadline_notifications")
+        
+        # Start the scheduler in the background
+        start_scheduler(app)
+        
     # Register blueprints (import here to avoid circular imports)
     from app.auth import auth_bp
     from app.admin_routes import admin_bp  # Import admin_bp first

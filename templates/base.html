@@ -162,12 +162,49 @@
                                 {{ unread_count if unread_count < 99 else '99+' }}
                             </span>
                             {% endif %}
-                        </a>
-                        <ul class="dropdown-menu dropdown-menu-end dropdown-notifications p-0">
+                        </a>                        <ul class="dropdown-menu dropdown-menu-end dropdown-notifications p-0">
                             <li class="dropdown-header bg-light py-2 px-3">
                                 <strong>Notifications</strong>
+                                <a href="{{ url_for('main.notifications') }}" class="float-end text-decoration-none small">View All</a>
+                            </li>                            <!-- Notification items -->
+                            {% if current_user.is_authenticated %}
+                                {% set recent_notifications = current_user.notifications.order_by(Notification.created_at.desc()).limit(5).all() if current_user.is_authenticated else [] %}
+                                {% if recent_notifications %}
+                                    {% for notification in recent_notifications %}
+                                        <li>
+                                            <a href="#" class="dropdown-item py-2 px-3 {% if not notification.is_read %}bg-light{% endif %}">
+                                                <div class="d-flex w-100 justify-content-between">
+                                                    <div>
+                                                        {% if notification.type == 'exam_graded' %}
+                                                            <i class="bi bi-check-circle-fill text-success me-2"></i>
+                                                        {% elif notification.type == 'new_exam' %}
+                                                            <i class="bi bi-file-earmark-text me-2 text-primary"></i>
+                                                        {% elif notification.type == 'exam_started' %}
+                                                            <i class="bi bi-play-circle-fill me-2 text-primary"></i>
+                                                        {% elif notification.type == 'exam_ending' %}
+                                                            <i class="bi bi-alarm-fill me-2 text-warning"></i>
+                                                        {% else %}
+                                                            <i class="bi bi-info-circle me-2 text-info"></i>
+                                                        {% endif %}
+                                                        {{ notification.message }}
+                                                    </div>
+                                                    <small class="text-muted ms-2">{{ notification.created_at|timesince }}</small>
+                                                </div>
+                                            </a>
+                                        </li>
+                                    {% endfor %}
+                                {% else %}
+                                    <li><div class="dropdown-item text-muted">No notifications</div></li>
+                                {% endif %}
+                            {% else %}
+                                <li><div class="dropdown-item text-muted">No notifications</div></li>
+                            {% endif %}
+                            <li><hr class="dropdown-divider m-0"></li>
+                            <li>
+                                <a class="dropdown-item text-center py-2" href="{{ url_for('main.notifications') }}">
+                                    See All Notifications
+                                </a>
                             </li>
-                            <!-- Notification items would go here -->
                         </ul>
                     </li>
                     

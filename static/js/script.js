@@ -133,3 +133,136 @@ function confirmAction(title, message, confirmBtnText, cancelBtnText, onConfirm)
         document.body.removeChild(modal);
     });
 }
+
+// Exam timer with auto-submit
+function initExamTimer(timeLimit, formId, warningThreshold = 300) {
+    const timerDisplay = document.getElementById('exam-timer');
+    const examForm = document.getElementById(formId);
+    
+    if (!timerDisplay || !examForm) return;
+    
+    let secondsRemaining = timeLimit;
+    let timerInterval;
+    
+    // Function to update the timer display
+    function updateTimer() {
+        secondsRemaining--;
+        
+        // Update the display
+        timerDisplay.textContent = formatTime(secondsRemaining);
+        
+        // Add warning class when time is running low
+        if (secondsRemaining <= warningThreshold) {
+            timerDisplay.classList.add('text-danger');
+            timerDisplay.classList.add('fw-bold');
+            
+            // Flash the timer when less than 1 minute remains
+            if (secondsRemaining <= 60) {
+                timerDisplay.classList.toggle('opacity-50');
+            }
+        }
+        
+        // Show warning at 5 minutes remaining
+        if (secondsRemaining === warningThreshold) {
+            const warningToast = new bootstrap.Toast(document.getElementById('time-warning-toast'));
+            warningToast.show();
+            
+            // Also send notification if possible
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Exam Time Warning', {
+                    body: 'You have 5 minutes remaining in your exam.',
+                    icon: '/static/images/favicon.ico'
+                });
+            }
+        }
+        
+        // Auto-submit when time is up
+        if (secondsRemaining <= 0) {
+            clearInterval(timerInterval);
+            timerDisplay.textContent = "Time's up!";
+            
+            // Show submission message
+            const submissionMessage = document.createElement('div');
+            submissionMessage.className = 'alert alert-warning mt-3';
+            submissionMessage.innerHTML = '<strong>Time\'s up!</strong> Your exam is being submitted...';
+            document.querySelector('.container').prepend(submissionMessage);
+            
+            // Create hidden input to mark as auto-submitted
+            const autoSubmitField = document.createElement('input');
+            autoSubmitField.type = 'hidden';
+            autoSubmitField.name = 'auto_submitted';
+            autoSubmitField.value = 'true';
+            examForm.appendChild(autoSubmitField);
+            
+            // Submit the form after a brief delay to allow user to see the message
+            setTimeout(() => {
+                examForm.submit();
+            }, 1500);
+        }
+    }
+    
+    // Start the timer
+    timerInterval = setInterval(updateTimer, 1000);
+    
+    // Save timer state in localStorage to prevent refresh cheating
+    window.addEventListener('beforeunload', () => {
+        localStorage.setItem('exam_timer_end', (Date.now() + (secondsRemaining * 1000)));
+    });
+    
+    // Check if there's a saved timer state
+    const savedEndTime = localStorage.getItem('exam_timer_end');
+    if (savedEndTime) {
+        const remainingMs = parseInt(savedEndTime) - Date.now();
+        if (remainingMs > 0) {
+            secondsRemaining = Math.floor(remainingMs / 1000);
+        } else {
+            secondsRemaining = 0;
+            updateTimer(); // Force submission
+        }
+    }
+    
+    // Update the initial display
+    timerDisplay.textContent = formatTime(secondsRemaining);
+}
+
+// Function to check if an exam is within its availability window
+function checkExamAvailability(startTime, endTime, elementId) {
+    const now = new Date();
+    const start = startTime ? new Date(startTime) : null;
+    const end = endTime ? new Date(endTime) : null;
+    const messageElement = document.getElementById(elementId);
+    
+    if (!messageElement) return;
+    
+    if (start && now < start) {
+        // Exam not yet available
+        messageElement.innerHTML = `<div class="alert alert-warning">
+            <i class="bi bi-clock me-2"></i>
+            This exam will be available starting ${start.toLocaleString()}.
+        </div>`;
+        return false;
+    }
+    
+    if (end && now > end) {
+        // Exam has ended
+        messageElement.innerHTML = `<div class="alert alert-danger">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            This exam is no longer available. It ended on ${end.toLocaleString()}.
+        </div>`;
+        return false;
+    }
+    
+    if (end) {
+        // Exam is available but has end time
+        const hoursRemaining = Math.floor((end - now) / (1000 * 60 * 60));
+        
+        if (hoursRemaining < 24) {
+            messageElement.innerHTML = `<div class="alert alert-info">
+                <i class="bi bi-alarm me-2"></i>
+                This exam will close in ${hoursRemaining} hour${hoursRemaining !== 1 ? 's' : ''}.
+            </div>`;
+        }
+    }
+    
+    return true;
+}

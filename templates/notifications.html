@@ -31,6 +31,10 @@
                                     <i class="bi bi-file-earmark-text me-2 text-primary"></i>
                                 {% elif notification.type == 'new_review' %}
                                     <i class="bi bi-star-fill text-warning me-2"></i>
+                                {% elif notification.type == 'exam_started' %}
+                                    <i class="bi bi-play-circle-fill me-2 text-primary"></i>
+                                {% elif notification.type == 'exam_ending' %}
+                                    <i class="bi bi-alarm-fill me-2 text-warning"></i>
                                 {% else %}
                                     <i class="bi bi-info-circle me-2 text-info"></i>
                                 {% endif %}
@@ -47,7 +51,7 @@
                                 <a href="{{ url_for('student.view_result', attempt_id=notification.related_id) }}" class="btn btn-sm btn-outline-primary">
                                     View Results
                                 </a>
-                            {% elif notification.type == 'new_exam' %}
+                            {% elif notification.type in ['new_exam', 'exam_started', 'exam_ending'] %}
                                 <a href="{{ url_for('student.take_exam', exam_id=notification.related_id) }}" class="btn btn-sm btn-outline-primary">
                                     View Exam
                                 </a>

@@ -256,6 +256,9 @@
 {% endblock %}
 
 {% block content %}
+<!-- Exam availability message area -->
+<div id="availability-message"></div>
+
 <div id="exam-container" class="no-copy">
     <div class="exam-controls d-flex justify-content-between align-items-center">
         <div class="d-flex gap-2">
@@ -265,11 +268,22 @@
             <button type="button" id="leave-exam-btn" class="btn btn-sm btn-outline-danger">
                 <i class="fas fa-sign-out-alt"></i> Leave Exam
             </button>
-        </div>
-        <div id="timer" class="card shadow-sm mb-0">
+        </div>        <div id="timer" class="card shadow-sm mb-0">
             <div class="card-body py-2 px-3 text-center">
                 <h6 class="mb-0 text-muted">Time Remaining</h6>
-                <h3 id="countdown" class="mb-0">--:--:--</h3>
+                <h3 id="exam-timer" class="mb-0">--:--:--</h3>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast for time warning -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 5">
+        <div id="time-warning-toast" class="toast align-items-center text-white bg-warning" role="alert" aria-live="assertive" aria-atomic="true" data-bs-delay="10000">
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="bi bi-alarm-fill me-2"></i> You have 5 minutes remaining on your exam!
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
             </div>
         </div>
     </div>
@@ -591,13 +605,25 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             saveAnswers();
         }
-    });
-
-    // Initialize auto-save
+    });    // Initialize auto-save
     setupAutoSave();
     
     // Save answers immediately on page load
     saveAnswers();
+    
+    // Initialize exam timer with auto-submit functionality
+    {% if exam.auto_submit %}
+    initExamTimer({{ exam.time_limit_minutes * 60 }}, 'examForm', 300); // 300 seconds (5 min) warning
+    {% endif %}
+    
+    // Check exam availability window
+    {% if exam.available_from or exam.available_until %}
+    checkExamAvailability(
+        '{{ exam.available_from.isoformat() if exam.available_from else "null" }}', 
+        '{{ exam.available_until.isoformat() if exam.available_until else "null" }}',
+        'availability-message'
+    );
+    {% endif %}
 
     // Cleanup on page unload
     window.addEventListener('beforeunload', function(e) {
