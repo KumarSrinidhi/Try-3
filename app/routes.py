@@ -1044,14 +1044,22 @@ def take_exam(exam_id):
                     'error': 'database_error',
                     'details': error_msg
                 }), 500
-        
-        try:
+          try:
             # Save final answers
             save_answers(request.form, attempt, is_final_submission=True)
             
             # Mark attempt as completed
             attempt.is_completed = True
             attempt.submitted_at = submission_time
+            attempt.completed_at = submission_time  # Make sure completed_at is also set
+            
+            # Ensure we calculate and store the score
+            try:
+                score_data = attempt.calculate_score()
+                attempt.score = score_data['percentage']
+                attempt.is_graded = True  # Mark as graded if all questions were MCQ and auto-graded
+            except Exception as e:
+                print(f"Error calculating score during submission: {str(e)}")
             
             # Log successful submission
             ActivityLog.log_activity(
@@ -1269,12 +1277,15 @@ def view_result(attempt_id):
     
     if attempt.student_id != current_user.id:
         abort(403)
-    
-    # Get all answers for this attempt
+      # Get all answers for this attempt
     answers = Answer.query.filter_by(attempt_id=attempt_id).all()
     
     # Calculate the score for this attempt
-    score = attempt.calculate_score()
+    try:
+        score = attempt.calculate_score()
+    except Exception as e:
+        print(f"Error calculating score: {str(e)}")
+        score = {'earned': 0, 'total': 0, 'percentage': 0}
     
     return render_template(
         'student/view_result.html',
@@ -1581,3 +1592,20 @@ def view_attempt(attempt_id):
         attempt=attempt,
         answers=answers
     )
+
+
+@student_bp.route('/exams/<int:exam_id>/<path:undefined_path>', methods=['GET', 'POST'])
+@login_required
+@student_required
+def handle_undefined_exam_path(exam_id, undefined_path):
+    """Handle undefined paths related to exams and redirect to the correct route"""
+    # Log the redirect attempt
+    print(f"Redirecting from undefined path: /student/exams/{exam_id}/{undefined_path}")
+    
+    # Check if this is likely an exam submission attempt
+    if undefined_path == 'undefined' and request.method == 'POST':
+        # Forward to the take_exam route
+        return take_exam(exam_id)
+    
+    # For GET requests or other undefined paths, redirect to the take exam page
+    return redirect(url_for('student.take_exam', exam_id=exam_id))

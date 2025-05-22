@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import db, login_manager
-from sqlalchemy import case
 
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -208,31 +207,14 @@ class ExamAttempt(db.Model):
                     Question.points
                 ).join(Question).filter(
                     Answer.attempt_id == self.id
-                ).all()                for is_correct, points in answers_with_points:
+                ).all()
+                
+                for is_correct, points in answers_with_points:
                     if is_correct:
                         earned_points += points
-                  # Calculate percentage with proper decimal handling
-                percentage = round((earned_points / total_points * 100), 2) if total_points > 0 else 0
                 
-                # Check if we need to apply auto-grading for MCQ questions
-                if self.is_completed and not self.is_graded:
-                    # Auto-grade MCQ questions that haven't been graded yet
-                    mcq_answers = db.session.query(Answer).join(Question).filter(
-                        Answer.attempt_id == self.id,
-                        Question.question_type == 'mcq',
-                        Answer.is_correct.is_(None)  # Only grade ungraded answers
-                    ).all()
-                    
-                    for answer in mcq_answers:
-                        # For MCQ, check if selected option is correct
-                        selected_option = answer.selected_option
-                        if selected_option:
-                            correct_option = db.session.query(QuestionOption).filter(
-                                QuestionOption.question_id == answer.question_id,
-                                QuestionOption.is_correct == True
-                            ).first()
-                            
-                            answer.is_correct = (selected_option.id == correct_option.id) if correct_option else False
+                # Calculate percentage with proper decimal handling
+                percentage = round((earned_points / total_points * 100), 2) if total_points > 0 else 0
                 
                 return {
                     'earned': earned_points,
@@ -254,7 +236,8 @@ class ExamAttempt(db.Model):
             Question.question_type != 'mcq',
             Answer.is_correct.is_(None)
         ).first() is not None
-      def validate_submission(self, submission_time, client_time=None):
+    
+    def validate_submission(self, submission_time, client_time=None):
         """
         Validate a submission attempt with comprehensive checks
         Returns (is_valid, message)
@@ -266,8 +249,7 @@ class ExamAttempt(db.Model):
         
         # Check exam availability window
         if self.exam.available_until and now > self.exam.available_until:
-            # Allow submission even after window expiry, but log it
-            pass
+            return False, "Exam availability window has expired"
             
         # Validate time limit
         time_limit = self.started_at + timedelta(minutes=self.exam.time_limit_minutes)

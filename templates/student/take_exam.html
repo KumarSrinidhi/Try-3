@@ -682,11 +682,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     hiddenInput.value = questionId;
                     card.querySelector('.card-body').appendChild(hiddenInput);
                 }
-            });
+            });            console.log('Submitting form data keys:', [...formData.keys()]);
 
-            console.log('Submitting form data keys:', [...formData.keys()]);
-
-            const response = await fetch(window.location.href, {
+            // Make sure we're submitting to the correct URL
+            const submitUrl = window.location.pathname;
+            console.log('Submitting to URL:', submitUrl);
+            
+            const response = await fetch(submitUrl, {
                 method: 'POST',
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest'
