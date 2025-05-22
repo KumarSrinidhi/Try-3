@@ -36,11 +36,11 @@
                     </li>
                     <li class="list-group-item d-flex justify-content-between">
                         <span>Completed:</span>
-                        <span>{{ attempt.completed_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        <span>{{ attempt.completed_at.strftime('%Y-%m-%d %H:%M') if attempt.completed_at else 'Not completed' }}</span>
                     </li>
                     <li class="list-group-item d-flex justify-content-between">
                         <span>Time taken:</span>
-                        <span>{{ (attempt.completed_at - attempt.started_at).total_seconds() // 60 }} minutes</span>
+                        <span>{{ (attempt.completed_at - attempt.started_at).total_seconds() // 60 if attempt.completed_at else 'N/A' }} {% if attempt.completed_at %}minutes{% endif %}</span>
                     </li>
                     <li class="list-group-item d-flex justify-content-between">
                         <span>Total questions:</span>

@@ -36,14 +36,16 @@ if __name__ == '__main__':
             else:
                 print("Database connection verification failed")
                 sys.exit(1)
-                
-            # Verify tables exist (optional but recommended)
+                  # Verify tables exist (optional but recommended)
             try:
-                db.session.execute(text("SELECT 1 FROM user LIMIT 1")).fetchone()
+                db.session.execute(text("SELECT 1 FROM users LIMIT 1")).fetchone()
             except Exception as e:
                 print(f"Warning: Potential database schema issue - {str(e)}")
-            
-        print("\nInitializing application...")
+                # Create tables if they don't exist
+                print("Attempting to create missing tables...")
+                db.create_all()
+                print("Tables created successfully!")
+            print("\nInitializing application...")
         app.run(host='0.0.0.0', port=5000, debug=True)  # Added explicit host/port
         
     except Exception as e:

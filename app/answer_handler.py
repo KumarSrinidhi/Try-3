@@ -108,7 +108,7 @@ class AnswerHandler:
             attempt.submission_location = submission_data.get('location')
             
             # Auto-grade MCQ questions if not already graded
-            cls._auto_grade_mcq(attempt)
+            AnswerHandler._auto_grade_mcq(attempt)
             
             # Log submission
             ExamSecurity.log_security_event(
@@ -126,6 +126,7 @@ class AnswerHandler:
             
         except Exception as e:
             db.session.rollback()
+            print(f"Error in submit_attempt: {e}")  # For debugging
             return False, f"Error submitting exam: {str(e)}"
             
     @staticmethod

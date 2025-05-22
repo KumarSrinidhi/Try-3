@@ -115,7 +115,10 @@ def save_answers(form_data, attempt, is_final_submission=False):
                     ).first()
                     if option:
                         answer.selected_option_id = option_id
-                except (ValueError, TypeError):
+                    else:
+                        raise Exception(f"No valid option found for MCQ: question_id={question_id}, option_id={option_id}")
+                except (ValueError, TypeError) as e:
+                    print(f"MCQ value error: {e}")
                     continue
                     
             elif question.question_type in ['text', 'code']:
@@ -125,11 +128,12 @@ def save_answers(form_data, attempt, is_final_submission=False):
             
             db.session.flush()
                 
-        except Exception:
+        except Exception as e:
             db.session.rollback()
-            continue
+            print(f"Error saving answer for question {question_id}: {e}")
+            return False, f"Error saving answer for question {question_id}: {e}"
     
-    return True
+    return True, None
 
 
 # Main routes
@@ -430,6 +434,9 @@ def grade_attempt(attempt_id):
     
     answers = Answer.query.filter_by(attempt_id=attempt_id).all()
     
+    # Create a main form for CSRF protection
+    grading_form = GradeAnswerForm(prefix='main')
+    
     grading_forms = {}
     for answer in answers:
         if answer.question.question_type != 'mcq':
@@ -439,17 +446,30 @@ def grade_attempt(attempt_id):
     
     if request.method == 'POST':
         try:
+            # Validate the main form for CSRF protection
+            if not grading_form.validate_on_submit():
+                flash('Invalid form submission. Please try again.', 'danger')
+                return redirect(url_for('teacher.grade_attempt', attempt_id=attempt_id))
+                
             for answer in answers:
                 if answer.question.question_type != 'mcq' and answer.id in grading_forms:
                     form = grading_forms[answer.id]
-                    if form.validate_on_submit():
-                        answer.is_correct = form.is_correct.data
+                    form.is_correct.data = 'is_correct_answer_{}'.format(answer.id) in request.form
+                    
+                    points_key = 'answer_{}-points_awarded'.format(answer.id)
+                    if points_key in request.form:
+                        try:
+                            points = int(request.form[points_key])
+                            max_points = answer.question.points
+                            answer.points_awarded = min(points, max_points)
+                        except (ValueError, TypeError):
+                            answer.points_awarded = 0
+                    
+                    feedback_key = 'feedback_{}'.format(answer.id)
+                    if feedback_key in request.form:
+                        answer.teacher_feedback = request.form[feedback_key]
                         
-                        max_points = answer.question.points
-                        points = min(form.points_awarded.data, max_points)
-                        
-                        if 'feedback_' + str(answer.id) in request.form:
-                            answer.teacher_feedback = request.form['feedback_' + str(answer.id)]
+                    answer.is_correct = form.is_correct.data
             
             attempt.is_graded = True
             db.session.commit()
@@ -476,6 +496,7 @@ def grade_attempt(attempt_id):
         exam=exam,
         answers=answers,
         grading_forms=grading_forms,
+        grading_form=grading_form,
         student=User.query.get(attempt.student_id)
     )
 
@@ -894,11 +915,18 @@ def take_exam(exam_id):
             
         try:
             # Process form data
-            save_answers(request.form, attempt)
-            
+            save_success, save_error = save_answers(request.form, attempt)
+            if not save_success:
+                db.session.rollback()
+                print(f"Save answers failed: {save_error}")
+                return jsonify({
+                    'success': False,
+                    'message': f"Error saving answers: {save_error}",
+                    'error': 'save_error',
+                    'details': save_error
+                }), 500
             # Log what's being saved for debugging
             print(f"Saving answers for attempt {attempt.id}, form keys: {list(request.form.keys())}")
-            
             # Commit the changes
             db.session.commit()
             
@@ -983,13 +1011,11 @@ def take_exam(exam_id):
             details={
                 'exam_id': exam.id,
                 'attempt_id': attempt.id,
-                'submission_time': submission_time.isoformat(),
-                'client_time': request.form.get('client_time')
+                'submission_time': submission_time.isoformat(),                'client_time': request.form.get('client_time')
             },
             ip_address=request.remote_addr
         )
-        
-        # Check if exam was already completed (prevent double submission)
+          # Check if exam was already completed (prevent double submission)
         if attempt.is_completed:
             return jsonify({
                 'success': False,
@@ -1002,6 +1028,7 @@ def take_exam(exam_id):
             try:
                 attempt.is_completed = True
                 attempt.submitted_at = submission_time
+                attempt.completed_at = submission_time  # Make sure completed_at is set
                 # Log time expired submission
                 ActivityLog.log_activity(
                     user_id=current_user.id,
@@ -1045,13 +1072,22 @@ def take_exam(exam_id):
                     'details': error_msg
                 }), 500
         
-        try:
-            # Save final answers
-            save_answers(request.form, attempt, is_final_submission=True)
-            
+        try:            # Save final answers
+            save_success, save_error = save_answers(request.form, attempt, is_final_submission=True)
+            if not save_success:
+                db.session.rollback()
+                print(f"Save answers failed (final submission): {save_error}")
+                return jsonify({
+                    'success': False,
+                    'message': f"Error saving answers: {save_error}",
+                    'error': 'save_error',
+                    'details': save_error
+                }), 500
+                
             # Mark attempt as completed
             attempt.is_completed = True
             attempt.submitted_at = submission_time
+            attempt.completed_at = submission_time  # Make sure completed_at is set
             
             # Log successful submission
             ActivityLog.log_activity(
@@ -1260,6 +1296,66 @@ def mark_read(notification_id):
     return redirect(url_for('main.notifications'))
 
 
+@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
+@login_required
+@student_required
+def review_exam(exam_id):
+    """Allow students to leave a review for an exam they've completed"""
+    exam = Exam.query.get_or_404(exam_id)
+    
+    # Check if the student has completed this exam
+    attempt = ExamAttempt.query.filter_by(
+        student_id=current_user.id,
+        exam_id=exam_id,
+        is_completed=True
+    ).first()
+    
+    if not attempt:
+        flash('You need to complete the exam before reviewing it.', 'warning')
+        return redirect(url_for('main.dashboard'))
+    
+    # Get existing review if any
+    review = ExamReview.query.filter_by(
+        exam_id=exam_id,
+        student_id=current_user.id
+    ).first()
+    
+    form = ExamReviewForm(obj=review)
+    
+    if form.validate_on_submit():
+        try:
+            if not review:
+                review = ExamReview(
+                    exam_id=exam_id,
+                    student_id=current_user.id
+                )
+            
+            review.rating = form.rating.data
+            review.feedback = form.feedback.data
+            
+            if not review.id:
+                db.session.add(review)
+                
+            db.session.commit()
+            
+            # Notify teacher about the review
+            notify_new_review(review.id)
+            
+            flash('Your review has been submitted successfully!', 'success')
+            return redirect(url_for('student.view_result', attempt_id=attempt.id))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error submitting review: {str(e)}', 'danger')
+    
+    return render_template(
+        'student/review_exam.html',
+        exam=exam,
+        form=form,
+        is_update=review is not None
+    )
+
+
 @student_bp.route('/attempts/<int:attempt_id>/result')
 @login_required
 @student_required
@@ -1281,69 +1377,6 @@ def view_result(attempt_id):
         attempt=attempt,
         answers=answers,
         score=score
-    )
-
-
-@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
-@login_required
-@student_required
-def review_exam(exam_id):
-    """Allow students to review and rate an exam they've completed"""
-    # Get the exam
-    exam = Exam.query.get_or_404(exam_id)
-    
-    # Verify the student has completed this exam
-    attempt = ExamAttempt.query.filter_by(
-        student_id=current_user.id,
-        exam_id=exam_id,
-        is_completed=True
-    ).first_or_404()
-    
-    # Check if student has already reviewed this exam
-    existing_review = ExamReview.query.filter_by(
-        student_id=current_user.id,
-        exam_id=exam_id
-    ).first()
-    
-    # Create form, populating with existing review if any
-    from app.forms import ExamReviewForm
-    form = ExamReviewForm(obj=existing_review)
-    
-    if form.validate_on_submit():
-        try:
-            if existing_review:
-                # Update existing review
-                existing_review.rating = form.rating.data
-                existing_review.feedback = form.feedback.data
-                existing_review.updated_at = datetime.utcnow()
-                flash('Your review has been updated.', 'success')
-            else:
-                # Create new review
-                review = ExamReview(
-                    student_id=current_user.id,
-                    exam_id=exam_id,
-                    rating=form.rating.data,
-                    feedback=form.feedback.data
-                )
-                db.session.add(review)
-                flash('Your review has been submitted. Thank you!', 'success')
-                
-                # Notify the instructor
-                notify_new_review(exam_id, current_user.id)
-            
-            db.session.commit()
-            
-            return redirect(url_for('student.view_result', attempt_id=attempt.id))
-            
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            flash('Error submitting review: ' + str(e), 'danger')
-    
-    return render_template(
-        'student/review_exam.html',
-        exam=exam,
-        form=form,
-        existing_review=existing_review
     )
 
 
@@ -1581,3 +1614,1032 @@ def view_attempt(attempt_id):
         attempt=attempt,
         answers=answers
     )
+
+
+@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
+@login_required
+@student_required
+def review_exam(exam_id):
+    """Allow students to leave a review for an exam they've completed"""
+    exam = Exam.query.get_or_404(exam_id)
+    
+    # Check if student completed this exam
+    attempt = ExamAttempt.query.filter_by(
+        student_id=current_user.id,
+        exam_id=exam_id,
+        is_completed=True
+    ).first()
+    
+    if not attempt:
+        flash('You need to complete the exam before reviewing it.', 'warning')
+        return redirect(url_for('main.dashboard'))
+    
+    # Get existing review if any
+    review = ExamReview.query.filter_by(
+        exam_id=exam_id,
+        student_id=current_user.id
+    ).first()
+    
+    form = ExamReviewForm(obj=review)
+    
+    if form.validate_on_submit():
+        try:
+            if not review:
+                review = ExamReview(
+                    exam_id=exam_id,
+                    student_id=current_user.id
+                )
+            
+            review.rating = form.rating.data
+            review.feedback = form.feedback.data
+            
+            if not review.id:
+                db.session.add(review)
+                
+            db.session.commit()
+            notify_new_review(review.id)
+            flash('Your review has been submitted successfully!', 'success')
+            return redirect(url_for('student.view_result', attempt_id=attempt.id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error submitting review: {str(e)}', 'danger')
+    
+    return render_template(
+        'student/review_exam.html',
+        exam=exam,
+        form=form,
+        is_update=review is not None
+    )
+
+
+@student_bp.route('/attempts/<int:attempt_id>/result')
+@login_required
+@student_required
+def view_result(attempt_id):
+    # Get the attempt and verify it belongs to the current student
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    if attempt.student_id != current_user.id:
+        abort(403)
+    
+    # Get all answers for this attempt
+    answers = Answer.query.filter_by(attempt_id=attempt_id).all()
+    
+    # Calculate the score for this attempt
+    score = attempt.calculate_score()
+    
+    return render_template(
+        'student/view_result.html',
+        attempt=attempt,
+        answers=answers,
+        score=score
+    )
+
+
+@main_bp.route('/admin/dashboard')
+@login_required
+@admin_required
+def admin_dashboard():
+    # Gather data for admin control center
+    from app.models import User, Exam, ExamAttempt, Notification
+    users = User.query.all()
+    exams = Exam.query.all()
+    attempts = ExamAttempt.query.all()
+    notifications = Notification.query.order_by(Notification.created_at.desc()).limit(10).all()
+    return render_template('dashboard/admin_dashboard.html', users=users, exams=exams, attempts=attempts, notifications=notifications)
+
+
+@teacher_bp.route('/gradebook', methods=['GET'])
+@login_required
+@teacher_required
+def gradebook():
+    """
+    Display gradebook with student scores across all exams or filtered by group/exam
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    sort_by = request.args.get('sort', 'name')
+    
+    # Get groups taught by this teacher
+    groups = Group.query.filter_by(teacher_id=current_user.id).all()
+    
+    # Get exams created by this teacher
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    # Apply group filter if provided
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        group = None
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exam_list = [exam]
+    else:
+        exam_list = exams_query.all()
+    
+    # Get all attempts for these students and exams
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exam_list]) if exam_list else True
+    )
+    
+    # Sort students based on sort parameter
+    if sort_by == 'name':
+        students.sort(key=lambda s: s.username.lower())
+    elif sort_by == 'needs_grading':
+        # Create a dict to store which students need grading
+        needs_grading = {}
+        for attempt in attempts_query:
+            if not attempt.is_graded and attempt.needs_grading:
+                needs_grading[attempt.student_id] = True
+        
+        # Sort with students needing grading first
+        students.sort(key=lambda s: (0 if needs_grading.get(s.id) else 1, s.username.lower()))
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    return render_template('teacher/gradebook.html',
+        students=students,
+        exam_list=exam_list,
+        attempts=attempts,
+        groups=groups,
+        exams=Exam.query.filter_by(creator_id=current_user.id).all(),
+        group=group,
+        exam=Exam.query.get(exam_id) if exam_id else None,
+        sort_by=sort_by
+    )
+
+
+@teacher_bp.route('/gradebook/export', methods=['GET'])
+@login_required
+@teacher_required
+def export_gradebook():
+    """
+    Export gradebook as CSV file
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    
+    # Build the query based on filters
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exams = [exam]
+    else:
+        exams = exams_query.all()
+    
+    # Get all attempts
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exams]) if exams else True
+    )
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    # Create CSV response
+    import csv
+    from io import StringIO
+    
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # Write header row
+    header = ['Student', 'Email']
+    for exam in exams:
+        header.append(exam.title)
+    header.append('Average')
+    writer.writerow(header)
+    
+    # Write data rows
+    for student in students:
+        row = [student.username, student.email]
+        
+        # Add scores for each exam
+        total_score = 0
+        score_count = 0
+        
+        for exam in exams:
+            attempt = attempts.get((student.id, exam.id))
+            if attempt and attempt.is_graded:
+                row.append(f"{attempt.score:.1f}%")
+                total_score += attempt.score
+                score_count += 1
+            else:
+                row.append("Not Attempted" if not attempt else "Needs Grading")
+        
+        # Calculate average
+        if score_count > 0:
+            average = total_score / score_count
+            row.append(f"{average:.1f}%")
+        else:
+            row.append("N/A")
+        
+        writer.writerow(row)
+    
+    # Set response headers
+    from flask import Response
+    group_name = Group.query.get(group_id).name if group_id else "All-Classes"
+    filename = f"gradebook-{group_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'no-cache'
+        }
+    )
+
+
+@teacher_bp.route('/attempts/<int:attempt_id>')
+@login_required
+@teacher_required
+def view_attempt(attempt_id):
+    """View details of a single exam attempt"""
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    # Make sure the teacher created this exam
+    if attempt.exam.creator_id != current_user.id:
+        abort(403)
+        
+    answers = attempt.answers.all()
+    return render_template(
+        'teacher/view_attempt.html',
+        attempt=attempt,
+        answers=answers
+    )
+
+
+@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
+@login_required
+@student_required
+def review_exam(exam_id):
+    """Allow students to leave a review for an exam they've completed"""
+    exam = Exam.query.get_or_404(exam_id)
+    
+    # Check if student completed this exam
+    attempt = ExamAttempt.query.filter_by(
+        student_id=current_user.id,
+        exam_id=exam_id,
+        is_completed=True
+    ).first()
+    
+    if not attempt:
+        flash('You need to complete the exam before reviewing it.', 'warning')
+        return redirect(url_for('main.dashboard'))
+    
+    # Get existing review if any
+    review = ExamReview.query.filter_by(
+        exam_id=exam_id,
+        student_id=current_user.id
+    ).first()
+    
+    form = ExamReviewForm(obj=review)
+    
+    if form.validate_on_submit():
+        try:
+            if not review:
+                review = ExamReview(
+                    exam_id=exam_id,
+                    student_id=current_user.id
+                )
+            
+            review.rating = form.rating.data
+            review.feedback = form.feedback.data
+            
+            if not review.id:
+                db.session.add(review)
+                
+            db.session.commit()
+            notify_new_review(review.id)
+            flash('Your review has been submitted successfully!', 'success')
+            return redirect(url_for('student.view_result', attempt_id=attempt.id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error submitting review: {str(e)}', 'danger')
+    
+    return render_template(
+        'student/review_exam.html',
+        exam=exam,
+        form=form,
+        is_update=review is not None
+    )
+
+
+@student_bp.route('/attempts/<int:attempt_id>/result')
+@login_required
+@student_required
+def view_result(attempt_id):
+    # Get the attempt and verify it belongs to the current student
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    if attempt.student_id != current_user.id:
+        abort(403)
+    
+    # Get all answers for this attempt
+    answers = Answer.query.filter_by(attempt_id=attempt_id).all()
+    
+    # Calculate the score for this attempt
+    score = attempt.calculate_score()
+    
+    return render_template(
+        'student/view_result.html',
+        attempt=attempt,
+        answers=answers,
+        score=score
+    )
+
+
+@main_bp.route('/admin/dashboard')
+@login_required
+@admin_required
+def admin_dashboard():
+    # Gather data for admin control center
+    from app.models import User, Exam, ExamAttempt, Notification
+    users = User.query.all()
+    exams = Exam.query.all()
+    attempts = ExamAttempt.query.all()
+    notifications = Notification.query.order_by(Notification.created_at.desc()).limit(10).all()
+    return render_template('dashboard/admin_dashboard.html', users=users, exams=exams, attempts=attempts, notifications=notifications)
+
+
+@teacher_bp.route('/gradebook', methods=['GET'])
+@login_required
+@teacher_required
+def gradebook():
+    """
+    Display gradebook with student scores across all exams or filtered by group/exam
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    sort_by = request.args.get('sort', 'name')
+    
+    # Get groups taught by this teacher
+    groups = Group.query.filter_by(teacher_id=current_user.id).all()
+    
+    # Get exams created by this teacher
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    # Apply group filter if provided
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        group = None
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exam_list = [exam]
+    else:
+        exam_list = exams_query.all()
+    
+    # Get all attempts for these students and exams
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exam_list]) if exam_list else True
+    )
+    
+    # Sort students based on sort parameter
+    if sort_by == 'name':
+        students.sort(key=lambda s: s.username.lower())
+    elif sort_by == 'needs_grading':
+        # Create a dict to store which students need grading
+        needs_grading = {}
+        for attempt in attempts_query:
+            if not attempt.is_graded and attempt.needs_grading:
+                needs_grading[attempt.student_id] = True
+        
+        # Sort with students needing grading first
+        students.sort(key=lambda s: (0 if needs_grading.get(s.id) else 1, s.username.lower()))
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    return render_template('teacher/gradebook.html',
+        students=students,
+        exam_list=exam_list,
+        attempts=attempts,
+        groups=groups,
+        exams=Exam.query.filter_by(creator_id=current_user.id).all(),
+        group=group,
+        exam=Exam.query.get(exam_id) if exam_id else None,
+        sort_by=sort_by
+    )
+
+
+@teacher_bp.route('/gradebook/export', methods=['GET'])
+@login_required
+@teacher_required
+def export_gradebook():
+    """
+    Export gradebook as CSV file
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    
+    # Build the query based on filters
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exams = [exam]
+    else:
+        exams = exams_query.all()
+    
+    # Get all attempts
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exams]) if exams else True
+    )
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    # Create CSV response
+    import csv
+    from io import StringIO
+    
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # Write header row
+    header = ['Student', 'Email']
+    for exam in exams:
+        header.append(exam.title)
+    header.append('Average')
+    writer.writerow(header)
+    
+    # Write data rows
+    for student in students:
+        row = [student.username, student.email]
+        
+        # Add scores for each exam
+        total_score = 0
+        score_count = 0
+        
+        for exam in exams:
+            attempt = attempts.get((student.id, exam.id))
+            if attempt and attempt.is_graded:
+                row.append(f"{attempt.score:.1f}%")
+                total_score += attempt.score
+                score_count += 1
+            else:
+                row.append("Not Attempted" if not attempt else "Needs Grading")
+        
+        # Calculate average
+        if score_count > 0:
+            average = total_score / score_count
+            row.append(f"{average:.1f}%")
+        else:
+            row.append("N/A")
+        
+        writer.writerow(row)
+    
+    # Set response headers
+    from flask import Response
+    group_name = Group.query.get(group_id).name if group_id else "All-Classes"
+    filename = f"gradebook-{group_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'no-cache'
+        }
+    )
+
+
+@teacher_bp.route('/attempts/<int:attempt_id>')
+@login_required
+@teacher_required
+def view_attempt(attempt_id):
+    """View details of a single exam attempt"""
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    # Make sure the teacher created this exam
+    if attempt.exam.creator_id != current_user.id:
+        abort(403)
+        
+    answers = attempt.answers.all()
+    return render_template(
+        'teacher/view_attempt.html',
+        attempt=attempt,
+        answers=answers
+    )
+
+
+@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
+@login_required
+@student_required
+def review_exam(exam_id):
+    """Allow students to leave a review for an exam they've completed"""
+    exam = Exam.query.get_or_404(exam_id)
+    
+    # Check if student completed this exam
+    attempt = ExamAttempt.query.filter_by(
+        student_id=current_user.id,
+        exam_id=exam_id,
+        is_completed=True
+    ).first()
+    
+    if not attempt:
+        flash('You need to complete the exam before reviewing it.', 'warning')
+        return redirect(url_for('main.dashboard'))
+    
+    # Get existing review if any
+    review = ExamReview.query.filter_by(
+        exam_id=exam_id,
+        student_id=current_user.id
+    ).first()
+    
+    form = ExamReviewForm(obj=review)
+    
+    if form.validate_on_submit():
+        try:
+            if not review:
+                review = ExamReview(
+                    exam_id=exam_id,
+                    student_id=current_user.id
+                )
+            
+            review.rating = form.rating.data
+            review.feedback = form.feedback.data
+            
+            if not review.id:
+                db.session.add(review)
+                
+            db.session.commit()
+            notify_new_review(review.id)
+            flash('Your review has been submitted successfully!', 'success')
+            return redirect(url_for('student.view_result', attempt_id=attempt.id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error submitting review: {str(e)}', 'danger')
+    
+    return render_template(
+        'student/review_exam.html',
+        exam=exam,
+        form=form,
+        is_update=review is not None
+    )
+
+
+@student_bp.route('/attempts/<int:attempt_id>/result')
+@login_required
+@student_required
+def view_result(attempt_id):
+    # Get the attempt and verify it belongs to the current student
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    if attempt.student_id != current_user.id:
+        abort(403)
+    
+    # Get all answers for this attempt
+    answers = Answer.query.filter_by(attempt_id=attempt_id).all()
+    
+    # Calculate the score for this attempt
+    score = attempt.calculate_score()
+    
+    return render_template(
+        'student/view_result.html',
+        attempt=attempt,
+        answers=answers,
+        score=score
+    )
+
+
+@main_bp.route('/admin/dashboard')
+@login_required
+@admin_required
+def admin_dashboard():
+    # Gather data for admin control center
+    from app.models import User, Exam, ExamAttempt, Notification
+    users = User.query.all()
+    exams = Exam.query.all()
+    attempts = ExamAttempt.query.all()
+    notifications = Notification.query.order_by(Notification.created_at.desc()).limit(10).all()
+    return render_template('dashboard/admin_dashboard.html', users=users, exams=exams, attempts=attempts, notifications=notifications)
+
+
+@teacher_bp.route('/gradebook', methods=['GET'])
+@login_required
+@teacher_required
+def gradebook():
+    """
+    Display gradebook with student scores across all exams or filtered by group/exam
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    sort_by = request.args.get('sort', 'name')
+    
+    # Get groups taught by this teacher
+    groups = Group.query.filter_by(teacher_id=current_user.id).all()
+    
+    # Get exams created by this teacher
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    # Apply group filter if provided
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        group = None
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exam_list = [exam]
+    else:
+        exam_list = exams_query.all()
+    
+    # Get all attempts for these students and exams
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exam_list]) if exam_list else True
+    )
+    
+    # Sort students based on sort parameter
+    if sort_by == 'name':
+        students.sort(key=lambda s: s.username.lower())
+    elif sort_by == 'needs_grading':
+        # Create a dict to store which students need grading
+        needs_grading = {}
+        for attempt in attempts_query:
+            if not attempt.is_graded and attempt.needs_grading:
+                needs_grading[attempt.student_id] = True
+        
+        # Sort with students needing grading first
+        students.sort(key=lambda s: (0 if needs_grading.get(s.id) else 1, s.username.lower()))
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    return render_template('teacher/gradebook.html',
+        students=students,
+        exam_list=exam_list,
+        attempts=attempts,
+        groups=groups,
+        exams=Exam.query.filter_by(creator_id=current_user.id).all(),
+        group=group,
+        exam=Exam.query.get(exam_id) if exam_id else None,
+        sort_by=sort_by
+    )
+
+
+@teacher_bp.route('/gradebook/export', methods=['GET'])
+@login_required
+@teacher_required
+def export_gradebook():
+    """
+    Export gradebook as CSV file
+    """
+    group_id = request.args.get('group_id', type=int)
+    exam_id = request.args.get('exam_id', type=int)
+    
+    # Build the query based on filters
+    exams_query = Exam.query.filter_by(creator_id=current_user.id)
+    
+    if group_id:
+        group = Group.query.get_or_404(group_id)
+        if group.teacher_id != current_user.id:
+            flash('You do not have access to this group\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        students = group.students.all()
+        exams_query = exams_query.filter_by(group_id=group_id)
+    else:
+        # Get all students who have taken the teacher's exams
+        students_query = db.session.query(User).join(
+            ExamAttempt, User.id == ExamAttempt.student_id
+        ).join(
+            Exam, ExamAttempt.exam_id == Exam.id
+        ).filter(
+            Exam.creator_id == current_user.id,
+            User.user_type == 'student'
+        ).distinct()
+        
+        students = students_query.all()
+    
+    # Apply exam filter if provided
+    if exam_id:
+        exam = Exam.query.get_or_404(exam_id)
+        if exam.creator_id != current_user.id:
+            flash('You do not have access to this exam\'s gradebook.', 'warning')
+            return redirect(url_for('teacher.gradebook'))
+        
+        exams = [exam]
+    else:
+        exams = exams_query.all()
+    
+    # Get all attempts
+    attempts_query = ExamAttempt.query.join(
+        Exam, ExamAttempt.exam_id == Exam.id
+    ).filter(
+        Exam.creator_id == current_user.id,
+        ExamAttempt.student_id.in_([s.id for s in students]) if students else True,
+        ExamAttempt.exam_id.in_([e.id for e in exams]) if exams else True
+    )
+    
+    # Create a dictionary of attempts for quick lookup
+    attempts = {}
+    for attempt in attempts_query:
+        attempts[(attempt.student_id, attempt.exam_id)] = attempt
+    
+    # Create CSV response
+    import csv
+    from io import StringIO
+    
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # Write header row
+    header = ['Student', 'Email']
+    for exam in exams:
+        header.append(exam.title)
+    header.append('Average')
+    writer.writerow(header)
+    
+    # Write data rows
+    for student in students:
+        row = [student.username, student.email]
+        
+        # Add scores for each exam
+        total_score = 0
+        score_count = 0
+        
+        for exam in exams:
+            attempt = attempts.get((student.id, exam.id))
+            if attempt and attempt.is_graded:
+                row.append(f"{attempt.score:.1f}%")
+                total_score += attempt.score
+                score_count += 1
+            else:
+                row.append("Not Attempted" if not attempt else "Needs Grading")
+        
+        # Calculate average
+        if score_count > 0:
+            average = total_score / score_count
+            row.append(f"{average:.1f}%")
+        else:
+            row.append("N/A")
+        
+        writer.writerow(row)
+    
+    # Set response headers
+    from flask import Response
+    group_name = Group.query.get(group_id).name if group_id else "All-Classes"
+    filename = f"gradebook-{group_name}-{datetime.now().strftime('%Y-%m-%d')}.csv"
+    
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'no-cache'
+        }
+    )
+
+
+@teacher_bp.route('/attempts/<int:attempt_id>')
+@login_required
+@teacher_required
+def view_attempt(attempt_id):
+    """View details of a single exam attempt"""
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    # Make sure the teacher created this exam
+    if attempt.exam.creator_id != current_user.id:
+        abort(403)
+        
+    answers = attempt.answers.all()
+    return render_template(
+        'teacher/view_attempt.html',
+        attempt=attempt,
+        answers=answers
+    )
+
+
+@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
+@login_required
+@student_required
+def review_exam(exam_id):
+    """Allow students to leave a review for an exam they've completed"""
+    exam = Exam.query.get_or_404(exam_id)
+    
+    # Check if student completed this exam
+    attempt = ExamAttempt.query.filter_by(
+        student_id=current_user.id,
+        exam_id=exam_id,
+        is_completed=True
+    ).first()
+    
+    if not attempt:
+        flash('You need to complete the exam before reviewing it.', 'warning')
+        return redirect(url_for('main.dashboard'))
+    
+    # Get existing review if any
+    review = ExamReview.query.filter_by(
+        exam_id=exam_id,
+        student_id=current_user.id
+    ).first()
+    
+    form = ExamReviewForm(obj=review)
+    
+    if form.validate_on_submit():
+        try:
+            if not review:
+                review = ExamReview(
+                    exam_id=exam_id,
+                    student_id=current_user.id
+                )
+            
+            review.rating = form.rating.data
+            review.feedback = form.feedback.data
+            
+            if not review.id:
+                db.session.add(review)
+                
+            db.session.commit()
+            notify_new_review(review.id)
+            flash('Your review has been submitted successfully!', 'success')
+            return redirect(url_for('student.view_result', attempt_id=attempt.id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error submitting review: {str(e)}', 'danger')
+    
+    return render_template(
+        'student/review_exam.html',
+        exam=exam,
+        form=form,
+        is_update=review is not None
+    )
+
+
+@student_bp.route('/attempts/<int:attempt_id>/result')
+@login_required
+@student_required
+def view_result(attempt_id):
+    # Get the attempt and verify it belongs to the current student
+    attempt = ExamAttempt.query.get_or_404(attempt_id)
+    
+    if attempt.student_id != current_user.id:
+        abort(403)
+    
+    # Get all answers for this attempt
+    answers = Answer.query.filter_by(attempt_id=attempt_id).all()
+    
+    # Calculate the score for this attempt
+    score = attempt.calculate_score()
+    
+    return render_template(
+        'student/view_result.html',
+        attempt=attempt,
+        answers=answers,
+        score=score
+    )
+
