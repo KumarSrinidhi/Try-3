@@ -28,6 +28,32 @@ teacher_bp = Blueprint('teacher', __name__, url_prefix='/teacher')
 student_bp = Blueprint('student', __name__, url_prefix='/student')
 
 
+# Helper functions for role-based access control
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_admin():
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated_function
+
+def teacher_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_teacher():
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated_function
+
+def student_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_student():
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 # Helper function to check if exam time has expired
 def check_time_expired(attempt):
     """Check if the exam time has expired for an attempt."""
@@ -54,84 +80,6 @@ def validate_submission_time(attempt, submission_time):
     return submission_time <= (time_limit + grace_period)
 
 
-# Improved save_answers function
-def save_answers(form_data, attempt, is_final_submission=False):
-    """
-    Save or update answers for an exam attempt.
-    If is_final_submission is True, also update submitted_at timestamp.
-    """
-    saved_question_ids = set()
-    
-    # First, find all answer keys (both question_id and answer_X format)
-    question_keys = {}
-    for key, value in form_data.items():
-        if key.startswith('question_id'):
-            try:
-                question_id = int(value)
-                question_keys[question_id] = None
-            except (ValueError, TypeError):
-                continue
-        
-        elif key.startswith('answer_'):
-            try:
-                question_id = int(key.split('_')[1])
-                question_keys[question_id] = value
-            except (ValueError, TypeError, IndexError):
-                continue
-    
-    # Process all collected questions
-    for question_id, value in question_keys.items():
-        try:
-            question = Question.query.get(question_id)
-            if not question or question.exam_id != attempt.exam_id:
-                continue
-                
-            saved_question_ids.add(question_id)
-            
-            answer = Answer.query.filter_by(
-                attempt_id=attempt.id,
-                question_id=question_id
-            ).first()
-            
-            if not answer:
-                answer = Answer(
-                    attempt_id=attempt.id,
-                    question_id=question_id
-                )
-                db.session.add(answer)
-            
-            if value is None:
-                answer_key = f'answer_{question_id}'
-                value = form_data.get(answer_key)
-                if value is None:
-                    continue
-            
-            if question.question_type == 'mcq':
-                try:
-                    option_id = int(value)
-                    option = QuestionOption.query.filter_by(
-                        id=option_id,
-                        question_id=question_id
-                    ).first()
-                    if option:
-                        answer.selected_option_id = option_id
-                except (ValueError, TypeError):
-                    continue
-                    
-            elif question.question_type in ['text', 'code']:
-                answer.text_answer = value
-                if question.question_type == 'code':
-                    answer.code_answer = value
-            
-            db.session.flush()
-                
-        except Exception:
-            db.session.rollback()
-            continue
-    
-    return True
-
-
 # Main routes
 @main_bp.route('/')
 def index():
@@ -143,39 +91,41 @@ def index():
 @main_bp.route('/dashboard')
 @login_required
 def dashboard():
-    try:
-        if current_user.is_admin():
-            return redirect(url_for('main.admin_dashboard'))
-        elif current_user.is_teacher():
-            exams = Exam.query.filter_by(creator_id=current_user.id).all()
-            return render_template('dashboard/teacher_dashboard.html', exams=exams)
-        else:
-            joined_groups = current_user.joined_groups.all()
-            group_ids = [g.id for g in joined_groups]
+    if current_user.is_admin():
+        # For admins: redirect to admin dashboard
+        return redirect(url_for('main.admin_dashboard'))
+    elif current_user.is_teacher():
+        # For teachers: show created exams
+        exams = Exam.query.filter_by(creator_id=current_user.id).all()
+        return render_template('dashboard/teacher_dashboard.html', exams=exams)
+    else:
+        # For students: show available exams from joined groups
+        joined_groups = current_user.joined_groups.all()
+        group_ids = [g.id for g in joined_groups]
 
-            available_exams = Exam.query.filter(
-                Exam.is_published == True,
-                Exam.group_id.in_(group_ids)
-            ).all()
-            
-            attempts = ExamAttempt.query.filter_by(student_id=current_user.id).all()
-            completed_attempts = [attempt for attempt in attempts if attempt.is_completed]
-            completed_exams = [attempt.exam for attempt in completed_attempts]
-            
-            average_score = 0
-            if completed_attempts:
-                total_score = sum(attempt.score or 0 for attempt in completed_attempts)
-                average_score = total_score / len(completed_attempts)
-            
-            return render_template(
-                'dashboard/student_dashboard.html',
-                available_exams=available_exams,
-                completed_exams=completed_exams,
-                average_score=average_score
-            )
-    except SQLAlchemyError as e:
-        flash('Error loading dashboard data', 'danger')
-        return redirect(url_for('main.index'))
+        # Get published exams from joined groups
+        available_exams = Exam.query.filter(
+            Exam.is_published == True,
+            Exam.group_id.in_(group_ids)
+        ).all()
+        
+        # Get student's attempts
+        attempts = ExamAttempt.query.filter_by(student_id=current_user.id).all()
+        completed_attempts = [attempt for attempt in attempts if attempt.is_completed]
+        completed_exams = [attempt.exam for attempt in completed_attempts]
+        
+        # Calculate average score for completed exams
+        average_score = 0
+        if completed_attempts:
+            total_score = sum(attempt.score or 0 for attempt in completed_attempts)
+            average_score = total_score / len(completed_attempts)
+        
+        return render_template(
+            'dashboard/student_dashboard.html',
+            available_exams=available_exams,
+            completed_exams=completed_exams,
+            average_score=average_score
+        )
 
 
 # Teacher routes
@@ -197,7 +147,7 @@ def create_exam():
                 time_limit_minutes=form.time_limit_minutes.data,
                 creator_id=current_user.id,
                 is_published=form.is_published.data,
-                group_id=form.group_id.data
+                group_id=form.group_id.data  # Class is now required
             )
             db.session.add(exam)
             db.session.commit()
@@ -224,6 +174,7 @@ def create_exam():
         except SQLAlchemyError as e:
             db.session.rollback()
             flash('An error occurred while creating the exam.', 'danger')
+            # Log the error (for admin/debugging purposes)
             print(f"Error creating exam: {str(e)}")
     
     return render_template('teacher/create_exam.html', form=form)
@@ -233,18 +184,25 @@ def create_exam():
 @login_required
 @teacher_required
 def edit_exam(exam_id):
+    # Use enhanced security verification
     from app.security import verify_exam_owner, log_security_event, security_rate_limiter
     
+    # This verifies ownership and returns the exam object
     exam = verify_exam_owner(exam_id)
+    
+    # Get existing questions
     questions = Question.query.filter_by(exam_id=exam_id).order_by(Question.order).all()
     
+    # Set up exam settings form
     form = ExamForm(obj=exam)
     groups = Group.query.filter_by(teacher_id=current_user.id).all()
     form.group_id.choices = [(g.id, g.name) for g in groups]
     
+    # Form for adding new questions
     question_form = QuestionForm()
     
     if request.method == 'POST':
+        # Handle exam settings form
         if 'update_settings' in request.form:
             if form.validate_on_submit():
                 try:
@@ -261,6 +219,7 @@ def edit_exam(exam_id):
                     flash('Error updating exam settings.', 'danger')
                     print(f"Error updating exam: {str(e)}")
         
+        # Handle add question form
         elif 'add_question' in request.form:
             if question_form.validate_on_submit():
                 try:
@@ -273,10 +232,11 @@ def edit_exam(exam_id):
                     )
                     db.session.add(question)
                     
+                    # For MCQ questions, add options
                     if question.question_type == 'mcq':
                         option_count = 0
                         for option_form in question_form.options:
-                            if option_form.option_text.data:
+                            if option_form.option_text.data:  # Only add non-empty options
                                 option = QuestionOption(
                                     question=question,
                                     option_text=option_form.option_text.data,
@@ -306,6 +266,7 @@ def edit_exam(exam_id):
 def delete_question(exam_id, question_id):
     question = Question.query.get_or_404(question_id)
     
+    # Check if current user is the creator of the exam
     if question.exam.creator_id != current_user.id:
         abort(403)
     
@@ -327,9 +288,11 @@ def delete_question(exam_id, question_id):
 def publish_exam(exam_id):
     exam = Exam.query.get_or_404(exam_id)
     
+    # Check if current user is the creator
     if exam.creator_id != current_user.id:
         abort(403)
     
+    # Verify exam has a group assigned
     if not exam.group_id:
         flash('Exam must be assigned to a class before publishing.', 'warning')
         return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
@@ -338,6 +301,7 @@ def publish_exam(exam_id):
     exam.is_published = True
     db.session.commit()
     
+    # Send notifications only if this is the first time publishing
     if not was_already_published:
         notify_new_exam(exam_id)
     
@@ -349,13 +313,14 @@ def publish_exam(exam_id):
 @login_required
 @teacher_required
 def exam_unpublish(exam_id):
+    """Unpublish an exam that was previously published"""
     from app.security import verify_exam_owner, log_security_event
     
     exam = verify_exam_owner(exam_id)
     
     if not exam.is_published:
         flash('This exam is already unpublished.', 'warning')
-    else:
+    else:        # Check if there are any completed attempts
         completed_attempts = ExamAttempt.query.filter_by(
             exam_id=exam_id, 
             is_completed=True
@@ -377,13 +342,18 @@ def exam_unpublish(exam_id):
 @login_required
 @teacher_required
 def view_exam(exam_id):
-    from app.security import verify_exam_owner, log_security_event
+    # Use the enhanced verification function from security.py
+    from app.security import verify_exam_owner
     
+    # This will verify ownership and return the exam or abort with 403
     exam = verify_exam_owner(exam_id)
     
+    # Fetch related data
     questions = Question.query.filter_by(exam_id=exam_id).order_by(Question.order).all()
     attempts = ExamAttempt.query.filter_by(exam_id=exam_id).all()
     
+    # Log successful access for audit
+    from app.security import log_security_event
     log_security_event('EXAM_ACCESS', f'Teacher {current_user.id} viewed exam {exam_id}')
     
     return render_template(
@@ -400,11 +370,14 @@ def view_exam(exam_id):
 def view_exam_attempts(exam_id):
     exam = Exam.query.get_or_404(exam_id)
     
+    # Check if current user is the creator
     if exam.creator_id != current_user.id:
         abort(403)
     
+    # Get all attempts for this exam
     attempts = ExamAttempt.query.filter_by(exam_id=exam_id).order_by(ExamAttempt.started_at.desc()).all()
     
+    # Get student information
     students = {
         attempt.student_id: User.query.get(attempt.student_id).username
         for attempt in attempts
@@ -425,51 +398,41 @@ def grade_attempt(attempt_id):
     attempt = ExamAttempt.query.get_or_404(attempt_id)
     exam = attempt.exam
     
+    # Check if current user is the creator of the exam
     if exam.creator_id != current_user.id:
         abort(403)
     
+    # Get all answers for this attempt
     answers = Answer.query.filter_by(attempt_id=attempt_id).all()
     
-    # Create a main form for CSRF protection
-    grading_form = GradeAnswerForm(prefix='main')
-    
+    # Create a dictionary of forms for grading each non-MCQ answer
     grading_forms = {}
     for answer in answers:
         if answer.question.question_type != 'mcq':
             form = GradeAnswerForm(prefix=f'answer_{answer.id}')
             form.points_awarded.default = answer.question.points if answer.is_correct else 0
             grading_forms[answer.id] = form
-    
+      # Process forms
     if request.method == 'POST':
-        try:
-            # Validate the main form for CSRF protection
-            if not grading_form.validate_on_submit():
-                flash('Invalid form submission. Please try again.', 'danger')
-                return redirect(url_for('teacher.grade_attempt', attempt_id=attempt_id))
-                
+        try:            # Process each form and update the answers
             for answer in answers:
                 if answer.question.question_type != 'mcq' and answer.id in grading_forms:
                     form = grading_forms[answer.id]
-                    form.is_correct.data = 'is_correct_answer_{}'.format(answer.id) in request.form
-                    
-                    points_key = 'answer_{}-points_awarded'.format(answer.id)
-                    if points_key in request.form:
-                        try:
-                            points = int(request.form[points_key])
-                            max_points = answer.question.points
-                            answer.points_awarded = min(points, max_points)
-                        except (ValueError, TypeError):
-                            answer.points_awarded = 0
-                    
-                    feedback_key = 'feedback_{}'.format(answer.id)
-                    if feedback_key in request.form:
-                        answer.teacher_feedback = request.form[feedback_key]
+                    if form.validate_on_submit():
+                        answer.is_correct = form.is_correct.data
                         
-                    answer.is_correct = form.is_correct.data
-            
+                        # Ensure points_awarded doesn't exceed question's max points
+                        max_points = answer.question.points
+                        points = min(form.points_awarded.data, max_points)
+                        
+                        # Save teacher feedback if provided
+                        if 'feedback_' + str(answer.id) in request.form:
+                            answer.teacher_feedback = request.form['feedback_' + str(answer.id)]
+              # Mark attempt as graded
             attempt.is_graded = True
             db.session.commit()
             
+            # Notify student that their exam has been graded
             notify_exam_graded(attempt.id)
             
             flash('Grading completed successfully!', 'success')
@@ -480,6 +443,7 @@ def grade_attempt(attempt_id):
             flash('Error while grading: ' + str(e), 'danger')
             print(f"Grading error: {str(e)}")
     else:
+        # Pre-populate forms with existing data
         for answer in answers:
             if answer.question.question_type != 'mcq' and answer.id in grading_forms:
                 form = grading_forms[answer.id]
@@ -492,7 +456,6 @@ def grade_attempt(attempt_id):
         exam=exam,
         answers=answers,
         grading_forms=grading_forms,
-        grading_form=grading_form,
         student=User.query.get(attempt.student_id)
     )
 
@@ -503,15 +466,18 @@ def grade_attempt(attempt_id):
 def exam_analytics(exam_id):
     exam = Exam.query.get_or_404(exam_id)
     
+    # Check if current user is the creator
     if exam.creator_id != current_user.id:
         abort(403)
     
+    # Get all completed attempts
     attempts = ExamAttempt.query.filter_by(exam_id=exam_id, is_completed=True).all()
     
     if not attempts:
         flash('No attempts have been made on this exam yet.', 'info')
         return redirect(url_for('teacher.view_exam', exam_id=exam_id))
     
+    # Calculate analytics
     analytics = {
         'total_attempts': len(attempts),
         'avg_score': 0,
@@ -521,8 +487,10 @@ def exam_analytics(exam_id):
         'completion_times': []
     }
     
+    # Get all questions
     questions = Question.query.filter_by(exam_id=exam_id).all()
     
+    # Initialize question statistics
     for question in questions:
         analytics['question_stats'][question.id] = {
             'question': question,
@@ -531,6 +499,7 @@ def exam_analytics(exam_id):
             'percent_correct': 0
         }
     
+    # Process each attempt
     total_score = 0
     for attempt in attempts:
         score = attempt.calculate_score()
@@ -542,6 +511,7 @@ def exam_analytics(exam_id):
         if score['percentage'] < analytics['lowest_score']:
             analytics['lowest_score'] = score['percentage']
         
+        # Calculate time taken in minutes
         if attempt.completed_at and attempt.started_at:
             time_taken = (attempt.completed_at - attempt.started_at).total_seconds() / 60
             analytics['completion_times'].append({
@@ -549,12 +519,14 @@ def exam_analytics(exam_id):
                 'minutes': round(time_taken, 1)
             })
         
+        # Process answers for each question
         for answer in attempt.answers:
             if answer.is_correct:
                 analytics['question_stats'][answer.question_id]['correct'] += 1
             else:
                 analytics['question_stats'][answer.question_id]['incorrect'] += 1
     
+    # Calculate averages and percentages
     if analytics['total_attempts'] > 0:
         analytics['avg_score'] = round(total_score / analytics['total_attempts'], 1)
         
@@ -563,6 +535,7 @@ def exam_analytics(exam_id):
             if total > 0:
                 stats['percent_correct'] = round((stats['correct'] / total) * 100, 1)
     
+    # Sort questions by difficulty (lowest percent correct first)
     sorted_questions = sorted(
         [stats for stats in analytics['question_stats'].values()],
         key=lambda x: x['percent_correct']
@@ -582,11 +555,14 @@ def exam_analytics(exam_id):
 def view_exam_reviews(exam_id):
     exam = Exam.query.get_or_404(exam_id)
     
+    # Check if current user is the creator
     if exam.creator_id != current_user.id:
         abort(403)
     
+    # Get all reviews for this exam
     reviews = ExamReview.query.filter_by(exam_id=exam_id).order_by(ExamReview.created_at.desc()).all()
     
+    # Calculate review statistics
     stats = {
         'total': len(reviews),
         'average': exam.get_average_rating(),
@@ -598,6 +574,7 @@ def view_exam_reviews(exam_id):
     for review in reviews:
         stats['counts'][str(review.rating)] += 1
     
+    # Calculate percentages
     if stats['total'] > 0:
         for rating in stats['counts']:
             stats['counts'][rating] = {
@@ -617,6 +594,9 @@ def view_exam_reviews(exam_id):
 @login_required
 @teacher_required
 def review_queue():
+    """Show all pending submissions that need grading"""
+    # Get all completed attempts for exams created by the current teacher
+    # that haven't been graded yet
     pending_attempts = (ExamAttempt.query
                        .join(Exam, ExamAttempt.exam_id == Exam.id)
                        .filter(Exam.creator_id == current_user.id)
@@ -635,15 +615,18 @@ def review_queue():
 @login_required
 @teacher_required
 def view_analytics():
+    """Show overall analytics for all exams created by this teacher"""
+    # Get some basic statistics
     total_exams = Exam.query.filter_by(creator_id=current_user.id).count()
     published_exams = Exam.query.filter_by(creator_id=current_user.id, is_published=True).count()
-    
+      # Get attempt statistics
     attempt_stats = db.session.query(
         func.count(ExamAttempt.id).label('total_attempts'),
         func.count(case([(ExamAttempt.is_completed == True, 1)])).label('completed_attempts'),
         func.avg(ExamAttempt.score).label('average_score')
     ).join(Exam).filter(Exam.creator_id == current_user.id).first()
     
+    # Get top performing students
     top_students = db.session.query(
         User.id, 
         User.username,
@@ -658,6 +641,7 @@ def view_analytics():
      .limit(5)\
      .all()
     
+    # Get recent activity
     recent_activity = db.session.query(
         ExamAttempt.id,
         User.username,
@@ -685,33 +669,42 @@ def view_analytics():
 @login_required
 @teacher_required
 def export_exams():
+    """Export all exam data for the current teacher"""
     from io import StringIO
-    from app.security import log_security_event
     
+    # Security logging
+    from app.security import log_security_event
     log_security_event('DATA_EXPORT', f'Teacher {current_user.id} exported exam data')
     
+    # Create CSV data
     csv_data = StringIO()
     csv_writer = csv.writer(csv_data)
     
+    # Write headers
     csv_writer.writerow(['Exam ID', 'Title', 'Description', 'Time Limit', 'Status', 
                          'Created Date', 'Questions', 'Total Attempts', 'Avg Score'])
     
+    # Get all exams for this teacher with stats
     exams = Exam.query.filter_by(creator_id=current_user.id).all()
     
     for exam in exams:
+        # Get question count
         question_count = Question.query.filter_by(exam_id=exam.id).count()
+          # Get all attempts for this exam
         attempts = ExamAttempt.query.filter_by(exam_id=exam.id, is_completed=True).all()
         attempts_count = len(attempts)
         
+        # Calculate average score
         if attempts_count > 0:
             total_score = sum(attempt.calculate_score()['percentage'] for attempt in attempts)
             avg_score = f"{(total_score / attempts_count):.1f}"
         else:
             avg_score = "N/A"
         
+        # Format the data
         status = 'Published' if exam.is_published else 'Draft'
         created_date = exam.created_at.strftime('%Y-%m-%d')
-        
+          # Write the row
         csv_writer.writerow([
             exam.id, 
             exam.title, 
@@ -724,6 +717,7 @@ def export_exams():
             avg_score
         ])
     
+    # Prepare the response
     response = make_response(csv_data.getvalue())
     response.headers['Content-Disposition'] = 'attachment; filename=exam_data.csv'
     response.headers['Content-type'] = 'text/csv'
@@ -734,8 +728,10 @@ def export_exams():
 @login_required
 @teacher_required
 def import_questions(exam_id):
+    """Import questions from a template file"""
     from app.security import verify_exam_owner
     
+    # Verify ownership
     exam = verify_exam_owner(exam_id)
     
     form = ImportQuestionsForm()
@@ -744,12 +740,14 @@ def import_questions(exam_id):
         try:
             file_contents = form.template_file.data.read().decode('utf-8')
             
+            # Process the CSV file
             from io import StringIO
             
             reader = csv.DictReader(StringIO(file_contents))
             question_count = 0
             
             for row in reader:
+                # Create new question
                 question = Question(
                     exam_id=exam_id,
                     question_text=row['question_text'],
@@ -760,6 +758,7 @@ def import_questions(exam_id):
                 db.session.add(question)
                 db.session.flush()
                 
+                # If MCQ, add options
                 if question.question_type == 'mcq' and 'options' in row:
                     options = row['options'].split('|')
                     correct_answer = int(row.get('correct_answer', 0))
@@ -789,21 +788,30 @@ def import_questions(exam_id):
 @login_required
 @teacher_required
 def download_template():
+    """Download a template CSV file for importing questions"""
     from io import StringIO
     
+    # Create CSV template
     csv_data = StringIO()
     csv_writer = csv.writer(csv_data)
     
+    # Headers
     csv_writer.writerow(['question_text', 'question_type', 'points', 'options', 'correct_answer'])
     
+    # Example rows
     csv_writer.writerow(['What is 2+2?', 'mcq', '5', '2|3|4|5', '2'])
     csv_writer.writerow(['Explain recursion.', 'text', '10', '', ''])
     csv_writer.writerow(['Write a function to calculate factorial.', 'code', '15', '', ''])
     
+    # Prepare the response
     response = make_response(csv_data.getvalue())
     response.headers['Content-Disposition'] = 'attachment; filename=question_template.csv'
     response.headers['Content-type'] = 'text/csv'
     return response
+
+
+# Route was removed to fix duplicate endpoint error
+# Analytics route already defined above at line ~500
 
 
 # Student routes
@@ -884,8 +892,7 @@ def take_exam(exam_id):
     
     # Create main form for CSRF protection
     form = TakeExamForm()
-    
-    # Handle AJAX requests for saving answers
+      # Handle AJAX requests for saving answers
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest' and request.method == 'POST':
         # Validate CSRF token
         if not form.validate_on_submit():
@@ -964,8 +971,7 @@ def take_exam(exam_id):
                 ip_address=request.remote_addr
             )
             return jsonify({
-                'success': False,
-                'message': "Error saving answers. Please try again.",
+                'success': False,                'message': "Error saving answers. Please try again.",
                 'error': 'unexpected_error',
                 'details': error_msg
             }), 500
@@ -1000,11 +1006,13 @@ def take_exam(exam_id):
             details={
                 'exam_id': exam.id,
                 'attempt_id': attempt.id,
-                'submission_time': submission_time.isoformat(),                'client_time': request.form.get('client_time')
+                'submission_time': submission_time.isoformat(),
+                'client_time': request.form.get('client_time')
             },
             ip_address=request.remote_addr
         )
-          # Check if exam was already completed (prevent double submission)
+        
+        # Check if exam was already completed (prevent double submission)
         if attempt.is_completed:
             return jsonify({
                 'success': False,
@@ -1060,7 +1068,8 @@ def take_exam(exam_id):
                     'details': error_msg
                 }), 500
         
-        try:            # Save final answers
+        try:
+            # Save final answers
             save_answers(request.form, attempt, is_final_submission=True)
             
             # Mark attempt as completed
@@ -1072,7 +1081,8 @@ def take_exam(exam_id):
                 user_id=current_user.id,
                 action="exam_submitted",
                 category="attempt",
-                details={                    'exam_id': exam.id,
+                details={
+                    'exam_id': exam.id,
                     'attempt_id': attempt.id,
                     'submission_time': submission_time.isoformat()
                 },
@@ -1176,6 +1186,98 @@ def take_exam(exam_id):
         form=form  # Main form for CSRF protection
     )
 
+
+def save_answers(form_data, attempt, is_final_submission=False):
+    """
+    Save or update answers for an exam attempt.
+    If is_final_submission is True, also update submitted_at timestamp.
+    """
+    saved_question_ids = set()
+    
+    # First, find all answer keys (both question_id and answer_X format)
+    question_keys = {}
+    for key, value in form_data.items():
+        # Check for explicit question_id fields
+        if key.startswith('question_id'):
+            try:
+                question_id = int(value)
+                question_keys[question_id] = None
+            except (ValueError, TypeError):
+                print(f"Warning: Invalid question_id value: {value}")
+        
+        # Also handle direct answer_X keys
+        elif key.startswith('answer_'):
+            try:
+                question_id = int(key.split('_')[1])
+                question_keys[question_id] = value
+            except (ValueError, TypeError):
+                print(f"Warning: Invalid answer key format: {key}")
+    
+    # Now process all collected questions
+    for question_id, value in question_keys.items():
+        try:
+            saved_question_ids.add(question_id)
+            
+            question = Question.query.get(question_id)
+            if not question:
+                print(f"Warning: Question {question_id} not found")
+                continue
+            
+            # Get or create answer
+            answer = Answer.query.filter_by(
+                attempt_id=attempt.id,
+                question_id=question_id
+            ).first()
+            
+            if not answer:
+                answer = Answer(
+                    attempt_id=attempt.id,
+                    question_id=question_id
+                )
+                db.session.add(answer)
+            
+            # Find the answer value if we didn't get it from direct answer_X mapping
+            if value is None:
+                answer_key = f'answer_{question_id}'
+                value = form_data.get(answer_key)
+                if value is None:
+                    print(f"Warning: No answer value found for question {question_id}")
+                    continue
+            
+            # Update answer based on question type
+            if question.question_type == 'mcq':
+                try:
+                    option_id = int(value)
+                    # Verify option belongs to question                    option = QuestionOption.query.filter_by(
+                        id=option_id,
+                        question_id=question_id
+                    ).first()
+                    if option:
+                        answer.selected_option_id = option_id
+                    else:
+                        print(f"Warning: Invalid option {option_id} for question {question_id}")
+                except (ValueError, TypeError) as e:
+                    print(f"Error processing MCQ answer: {str(e)}")
+                    continue
+                    
+            elif question.question_type in ['text', 'code']:
+                answer.text_answer = value
+                if question.question_type == 'code':
+                    answer.code_answer = value
+            
+            db.session.flush()  # Flush changes for this answer
+                  except (ValueError, TypeError) as e:
+            print(f"Error processing answer for question {question_id}: {str(e)}")
+            continue
+    
+    # Verify all questions were processed
+    expected_questions = set(q.id for q in Question.query.filter_by(exam_id=attempt.exam_id).all())
+    missing_questions = expected_questions - saved_question_ids
+    
+    if missing_questions:
+        print(f"Warning: Missing answers for questions: {missing_questions}")
+    
+    return True
 
 @student_bp.route('/exams/get_server_time', methods=['GET'])
 @login_required
@@ -1308,7 +1410,6 @@ def admin_dashboard():
     attempts = ExamAttempt.query.all()
     notifications = Notification.query.order_by(Notification.created_at.desc()).limit(10).all()
     return render_template('dashboard/admin_dashboard.html', users=users, exams=exams, attempts=attempts, notifications=notifications)
-
 
 @teacher_bp.route('/gradebook', methods=['GET'])
 @login_required

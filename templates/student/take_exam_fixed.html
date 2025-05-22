@@ -483,7 +483,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Start timer
     updateTimer();
-    const timerInterval = setInterval(updateTimer, 1000);    // Auto-save function with retry mechanism
+    const timerInterval = setInterval(updateTimer, 1000);
+
+    // Auto-save function with retry mechanism
     async function saveAnswers(retryCount = 0) {
         if (retryCount > 3) {
             lastSavedSuccessfully = false;
@@ -491,52 +493,8 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        // Update save button UI state
-        const saveBtn = document.getElementById('save-progress-btn');
-        const origSaveText = saveBtn.innerHTML;
-        saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
-        saveBtn.classList.add('saving');
-        saveBtn.disabled = true;
-
         try {
-            // Make sure we have question IDs for all answers
-            const questionCards = document.querySelectorAll('.question-card');
-            questionCards.forEach(card => {
-                // Make sure each question has a question_id field
-                const inputs = card.querySelectorAll('input, textarea');
-                let hasQuestionId = false;
-                let questionId = null;
-                
-                // Check if inputs include a question ID field
-                inputs.forEach(input => {
-                    if (input.name === 'question_id') {
-                        hasQuestionId = true;
-                        questionId = input.value;
-                    }
-                    if (input.name && input.name.startsWith('answer_')) {
-                        const id = input.name.split('_')[1];
-                        if (id) questionId = id;
-                    }
-                });
-                
-                // If no question ID found, add one
-                if (!hasQuestionId && questionId) {
-                    const hiddenInput = document.createElement('input');
-                    hiddenInput.type = 'hidden';
-                    hiddenInput.name = 'question_id';
-                    hiddenInput.value = questionId;
-                    card.querySelector('.card-body').appendChild(hiddenInput);
-                }
-            });
-            
             const formData = new FormData(examForm);
-            
-            // Add client timestamp for validation
-            formData.append('client_time', new Date().toISOString());
-            
-            // Log form data for debugging
-            console.log('Saving form data keys:', [...formData.keys()]);
-            
             const response = await fetch(window.location.href, {
                 method: 'POST',
                 headers: {
@@ -545,11 +503,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: formData
             });
 
-            // Handle non-JSON responses (like 500 errors)
-            if (!response.ok && !response.headers.get('content-type')?.includes('application/json')) {
-                throw new Error(`Server error: ${response.status} ${response.statusText}`);
-            }
-
             const data = await response.json();
             
             if (data.success) {
@@ -557,18 +510,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 lastSavedSpan.textContent = 'Last saved: ' + new Date().toLocaleTimeString();
                 lastSavedSpan.classList.remove('text-danger');
                 lastSavedSpan.classList.add('text-muted');
-                
-                // Update save button to success state
-                saveBtn.innerHTML = '<i class="fas fa-check"></i> Saved';
-                saveBtn.classList.remove('saving');
-                saveBtn.classList.add('saved');
-                
-                // Reset button after a delay
-                setTimeout(() => {
-                    saveBtn.innerHTML = origSaveText;
-                    saveBtn.classList.remove('saved');
-                    saveBtn.disabled = false;
-                }, 2000);
             } else if (data.redirect_url) {
                 window.location.href = data.redirect_url;
             } else {
@@ -580,18 +521,6 @@ document.addEventListener('DOMContentLoaded', function() {
             lastSavedSpan.textContent = 'Failed to save! Retrying...';
             lastSavedSpan.classList.remove('text-muted');
             lastSavedSpan.classList.add('text-danger');
-            
-            // Update save button to error state
-            saveBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Error';
-            saveBtn.classList.remove('saving');
-            saveBtn.classList.add('error');
-            
-            // Reset button after a delay
-            setTimeout(() => {
-                saveBtn.innerHTML = origSaveText;
-                saveBtn.classList.remove('error');
-                saveBtn.disabled = false;
-            }, 2000);
             
             // Retry after a delay
             setTimeout(() => saveAnswers(retryCount + 1), 2000);
@@ -624,7 +553,9 @@ document.addEventListener('DOMContentLoaded', function() {
         errorMessage.textContent = message;
         retryButton.style.display = canRetry ? 'block' : 'none';
         errorModal.show();
-    }    // Handle exam submission with retry mechanism
+    }
+
+    // Handle exam submission with retry mechanism
     async function submitExam(isAutoSubmit = false) {
         if (!lastSavedSuccessfully && !isAutoSubmit) {
             const shouldProceed = confirm('Some answers may not be saved. Do you want to proceed with submission anyway?');
@@ -634,57 +565,9 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        // Update submit button UI
-        const submitBtn = document.getElementById('submit-exam-btn');
-        const originalBtnHtml = submitBtn.innerHTML;
-        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i> Submitting...';
-        submitBtn.disabled = true;
-
         try {
-            // Try to save answers one more time before submitting
-            if (!isAutoSubmit) {
-                try {
-                    await saveAnswers();
-                } catch (saveError) {
-                    console.error('Final save before submission failed:', saveError);
-                }
-            }
-
             const formData = new FormData(examForm);
             formData.append('submit_exam', '1');
-            formData.append('client_time', new Date().toISOString());
-
-            // Make sure we have question IDs for all answers
-            const questionCards = document.querySelectorAll('.question-card');
-            questionCards.forEach(card => {
-                // Make sure each question has a question_id field
-                const inputs = card.querySelectorAll('input, textarea');
-                let hasQuestionId = false;
-                let questionId = null;
-                
-                // Check if inputs include a question ID field
-                inputs.forEach(input => {
-                    if (input.name === 'question_id') {
-                        hasQuestionId = true;
-                        questionId = input.value;
-                    }
-                    if (input.name && input.name.startsWith('answer_')) {
-                        const id = input.name.split('_')[1];
-                        if (id) questionId = id;
-                    }
-                });
-                
-                // If no question ID found, add one
-                if (!hasQuestionId && questionId) {
-                    const hiddenInput = document.createElement('input');
-                    hiddenInput.type = 'hidden';
-                    hiddenInput.name = 'question_id';
-                    hiddenInput.value = questionId;
-                    card.querySelector('.card-body').appendChild(hiddenInput);
-                }
-            });
-
-            console.log('Submitting form data keys:', [...formData.keys()]);
 
             const response = await fetch(window.location.href, {
                 method: 'POST',
@@ -693,11 +576,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 },
                 body: formData
             });
-
-            // Check for non-JSON responses
-            if (!response.ok && !response.headers.get('content-type')?.includes('application/json')) {
-                throw new Error(`Server error: ${response.status} ${response.statusText}`);
-            }
 
             const data = await response.json();
             
@@ -715,10 +593,6 @@ document.addEventListener('DOMContentLoaded', function() {
             console.error('Submission error:', error);
             showError('Failed to submit exam. Your answers are saved. Would you like to try again?', true);
             isSubmitting = false;
-            
-            // Reset submit button
-            submitBtn.innerHTML = originalBtnHtml;
-            submitBtn.disabled = false;
         }
     }
 

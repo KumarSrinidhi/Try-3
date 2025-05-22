@@ -430,9 +430,6 @@ def grade_attempt(attempt_id):
     
     answers = Answer.query.filter_by(attempt_id=attempt_id).all()
     
-    # Create a main form for CSRF protection
-    grading_form = GradeAnswerForm(prefix='main')
-    
     grading_forms = {}
     for answer in answers:
         if answer.question.question_type != 'mcq':
@@ -442,30 +439,17 @@ def grade_attempt(attempt_id):
     
     if request.method == 'POST':
         try:
-            # Validate the main form for CSRF protection
-            if not grading_form.validate_on_submit():
-                flash('Invalid form submission. Please try again.', 'danger')
-                return redirect(url_for('teacher.grade_attempt', attempt_id=attempt_id))
-                
             for answer in answers:
                 if answer.question.question_type != 'mcq' and answer.id in grading_forms:
                     form = grading_forms[answer.id]
-                    form.is_correct.data = 'is_correct_answer_{}'.format(answer.id) in request.form
-                    
-                    points_key = 'answer_{}-points_awarded'.format(answer.id)
-                    if points_key in request.form:
-                        try:
-                            points = int(request.form[points_key])
-                            max_points = answer.question.points
-                            answer.points_awarded = min(points, max_points)
-                        except (ValueError, TypeError):
-                            answer.points_awarded = 0
-                    
-                    feedback_key = 'feedback_{}'.format(answer.id)
-                    if feedback_key in request.form:
-                        answer.teacher_feedback = request.form[feedback_key]
+                    if form.validate_on_submit():
+                        answer.is_correct = form.is_correct.data
                         
-                    answer.is_correct = form.is_correct.data
+                        max_points = answer.question.points
+                        points = min(form.points_awarded.data, max_points)
+                        
+                        if 'feedback_' + str(answer.id) in request.form:
+                            answer.teacher_feedback = request.form['feedback_' + str(answer.id)]
             
             attempt.is_graded = True
             db.session.commit()
@@ -492,7 +476,6 @@ def grade_attempt(attempt_id):
         exam=exam,
         answers=answers,
         grading_forms=grading_forms,
-        grading_form=grading_form,
         student=User.query.get(attempt.student_id)
     )
 
@@ -1000,11 +983,13 @@ def take_exam(exam_id):
             details={
                 'exam_id': exam.id,
                 'attempt_id': attempt.id,
-                'submission_time': submission_time.isoformat(),                'client_time': request.form.get('client_time')
+                'submission_time': submission_time.isoformat(),
+                'client_time': request.form.get('client_time')
             },
             ip_address=request.remote_addr
         )
-          # Check if exam was already completed (prevent double submission)
+        
+        # Check if exam was already completed (prevent double submission)
         if attempt.is_completed:
             return jsonify({
                 'success': False,
@@ -1060,7 +1045,8 @@ def take_exam(exam_id):
                     'details': error_msg
                 }), 500
         
-        try:            # Save final answers
+        try:
+            # Save final answers
             save_answers(request.form, attempt, is_final_submission=True)
             
             # Mark attempt as completed
@@ -1072,7 +1058,8 @@ def take_exam(exam_id):
                 user_id=current_user.id,
                 action="exam_submitted",
                 category="attempt",
-                details={                    'exam_id': exam.id,
+                details={
+                    'exam_id': exam.id,
                     'attempt_id': attempt.id,
                     'submission_time': submission_time.isoformat()
                 },

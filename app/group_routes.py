@@ -104,7 +104,14 @@ def join_group():
             return redirect(url_for('group.view_group', group_id=group.id))
         
         try:
-            group.students.append(current_user)
+            # Create explicit membership entry
+            membership = GroupMembership(user_id=current_user.id, group_id=group.id)
+            db.session.add(membership)
+            
+            # Also add to the relationship to ensure consistency
+            if current_user not in group.students:
+                group.students.append(current_user)
+                
             db.session.commit()
             
             # Notify student about available exams in this group
@@ -156,9 +163,21 @@ def list_members(group_id):
         flash('You do not have access to this group.', 'warning')
         return redirect(url_for('group.list_groups'))
     
+    # Get students using both methods to ensure we show everyone
+    students_from_relationship = set(group.students)
+    
+    # Also get students from membership table directly
+    memberships = GroupMembership.query.filter_by(group_id=group.id).all()
+    student_ids = [m.user_id for m in memberships]
+    students_from_memberships = set(User.query.filter(User.id.in_(student_ids)).all())
+    
+    # Combine both sets to get all students
+    all_students = list(students_from_relationship.union(students_from_memberships))
+    
     return render_template(
         'groups/members.html',
         group=group,
+        all_students=all_students,
         is_teacher=current_user.id == group.teacher_id
     )
 
@@ -175,9 +194,17 @@ def remove_member(group_id, user_id):
         return redirect(url_for('group.list_groups'))
     
     user = User.query.get_or_404(user_id)
-    
     try:
-        group.students.remove(user)
+        # Remove from relationship
+        if user in group.students:
+            group.students.remove(user)
+        
+        # Also remove from membership table directly
+        GroupMembership.query.filter_by(
+            user_id=user.id,
+            group_id=group.id
+        ).delete()
+        
         db.session.commit()
         flash(f'Successfully removed {user.username} from {group.name}.', 'success')
     except SQLAlchemyError as e:
@@ -211,3 +238,77 @@ def archive_group(group_id):
         print(f"Error updating class: {str(e)}")
     
     return redirect(url_for('group.view_group', group_id=group.id))
+
+@group_bp.route('/debug-members/<int:group_id>')
+@login_required
+def debug_members(group_id):
+    """Debug route to check group memberships"""
+    if not current_user.is_teacher():
+        flash('Only teachers can access this debug route.', 'warning')
+        return redirect(url_for('group.list_groups'))
+    
+    group = Group.query.get_or_404(group_id)
+    
+    # Check if user is the teacher of this group
+    if group.teacher_id != current_user.id:
+        flash('You do not have access to this debug information.', 'warning')
+        return redirect(url_for('group.list_groups'))
+    
+    # Get students using relationship
+    students_via_relationship = group.students.all()
+    
+    # Get students via direct query
+    memberships = GroupMembership.query.filter_by(group_id=group_id).all()
+    student_ids = [membership.user_id for membership in memberships]
+    students_via_query = User.query.filter(User.id.in_(student_ids)).all() if student_ids else []
+    
+    return render_template(
+        'groups/debug_members.html',
+        group=group,
+        students_via_relationship=students_via_relationship,
+        students_via_query=students_via_query,
+        memberships=memberships
+    )
+
+@group_bp.route('/fix-memberships/<int:group_id>', methods=['POST'])
+@login_required
+def fix_memberships(group_id):
+    """Fix inconsistent group memberships"""
+    if not current_user.is_teacher():
+        flash('Only teachers can access this function.', 'warning')
+        return redirect(url_for('group.list_groups'))
+    
+    group = Group.query.get_or_404(group_id)
+    
+    # Check if user is the teacher of this group
+    if group.teacher_id != current_user.id:
+        flash('You do not have permission to fix memberships for this group.', 'warning')
+        return redirect(url_for('group.list_groups'))
+    
+    try:
+        # Get all students who should be in the group
+        memberships = GroupMembership.query.filter_by(group_id=group_id).all()
+        expected_student_ids = {membership.user_id for membership in memberships}
+        
+        # Get all students who are in the relationship
+        actual_students = group.students.all()
+        actual_student_ids = {student.id for student in actual_students}
+        
+        # Find missing students
+        missing_student_ids = expected_student_ids - actual_student_ids
+        
+        # Add missing students to the relationship
+        for student_id in missing_student_ids:
+            student = User.query.get(student_id)
+            if student:
+                group.students.append(student)
+        
+        # Commit changes
+        db.session.commit()
+        
+        flash(f'Successfully fixed {len(missing_student_ids)} membership(s).', 'success')
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        flash(f'Error fixing memberships: {str(e)}', 'danger')
+    
+    return redirect(url_for('group.debug_members', group_id=group_id))
