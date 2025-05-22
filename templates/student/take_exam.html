@@ -684,8 +684,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });            console.log('Submitting form data keys:', [...formData.keys()]);
 
-            // Make sure we're submitting to the correct URL
-            const submitUrl = window.location.pathname;
+            // Create a dedicated submission URL that avoids the 'undefined' path issue
+            const currentPath = window.location.pathname;
+            const examId = currentPath.split('/').filter(part => part)[2]; // Get the exam ID from the path
+            const submitUrl = `/student/exams/${examId}/submit`;
             console.log('Submitting to URL:', submitUrl);
             
             const response = await fetch(submitUrl, {

@@ -997,11 +997,15 @@ def take_exam(exam_id):
                 'redirect_url': url_for('student.view_result', attempt_id=attempt.id)
             }), 400
         
-        # Validate submission time
-        if not validate_submission_time(attempt, submission_time):
-            try:
-                attempt.is_completed = True
-                attempt.submitted_at = submission_time
+    # Validate submission time - but be more lenient to prevent data loss
+    is_valid_time = validate_submission_time(attempt, submission_time)
+    if not is_valid_time:
+        print(f"Submission time validation failed, but proceeding with submission")
+        
+    try:
+        attempt.is_completed = True
+        attempt.submitted_at = submission_time
+        attempt.completed_at = submission_time
                 # Log time expired submission
                 ActivityLog.log_activity(
                     user_id=current_user.id,
@@ -1609,3 +1613,12 @@ def handle_undefined_exam_path(exam_id, undefined_path):
     
     # For GET requests or other undefined paths, redirect to the take exam page
     return redirect(url_for('student.take_exam', exam_id=exam_id))
+
+
+@student_bp.route('/exams/<int:exam_id>/submit', methods=['POST'])
+@login_required
+@student_required
+def submit_exam(exam_id):
+    """Dedicated route for exam submissions to avoid URL issues"""
+    # Just forward to take_exam with the proper exam_id
+    return take_exam(exam_id)
