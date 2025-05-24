@@ -1,8 +1,8 @@
-from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify
+from flask import Blueprint, render_template, redirect, url_for, flash, request, jsonify, session
 from flask_login import login_required, current_user
 from sqlalchemy.exc import SQLAlchemyError
 from app.models import db, Group, GroupMembership, User, Exam
-from app.forms import CreateGroupForm, JoinGroupForm
+from app.forms import CreateGroupForm, JoinGroupForm, TakeExamForm
 from app.decorators import teacher_required
 from app.notifications import notify_student_group_exams
 
@@ -103,6 +103,32 @@ def join_group():
             flash('You are already a member of this group.', 'info')
             return redirect(url_for('group.view_group', group_id=group.id))
         
+        # Store the group ID in the session and redirect to confirmation page
+        session['joining_group_id'] = group.id
+        return redirect(url_for('group.confirm_join', group_id=group.id))
+    
+    return render_template('groups/join_group.html', form=form)
+
+@group_bp.route('/confirm-join/<int:group_id>', methods=['GET', 'POST'])
+@login_required
+def confirm_join(group_id):
+    """Confirm joining a group"""
+    # Security check - make sure this is the group they were trying to join
+    if session.get('joining_group_id') != group_id:
+        flash('Invalid request. Please try again.', 'danger')
+        return redirect(url_for('group.join_group'))
+    
+    group = Group.query.get_or_404(group_id)
+    
+    # Already a member check
+    if current_user in group.students:
+        flash('You are already a member of this group.', 'info')
+        return redirect(url_for('group.view_group', group_id=group.id))
+    
+    # Create form for CSRF protection
+    form = TakeExamForm()
+    
+    if request.method == 'POST' and request.form.get('confirm') == 'true':
         try:
             # Create explicit membership entry
             membership = GroupMembership(user_id=current_user.id, group_id=group.id)
@@ -113,6 +139,9 @@ def join_group():
                 group.students.append(current_user)
                 
             db.session.commit()
+            
+            # Clean up session
+            session.pop('joining_group_id', None)
             
             # Notify student about available exams in this group
             notify_student_group_exams(current_user.id, group.id)
@@ -125,7 +154,7 @@ def join_group():
             flash('Error joining group. Please try again.', 'danger')
             print(f"Error joining group: {str(e)}")
     
-    return render_template('groups/join_group.html', form=form)
+    return render_template('groups/confirm_join.html', form=form, group=group)
 
 @group_bp.route('/<int:group_id>/leave', methods=['POST'])
 @login_required

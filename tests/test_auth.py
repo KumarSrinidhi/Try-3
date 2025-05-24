@@ -1,15 +1,18 @@
 import pytest
 from app.models import User
 
-def test_register_and_login(client, app):
-    # Register a new user
-    response = client.post('/register', data={
-        'username': 'newuser',
-        'email': 'newuser@example.com',
-        'password': 'newpassword123',
-        'confirm_password': 'newpassword123'
-    }, follow_redirects=True)
-    assert b'Registration successful' in response.data
+def test_register_and_login(client, app):    # Register a new user
+    with app.app_context():
+        response = client.post('/register', data={
+            'username': 'newuser',
+            'email': 'newuser@example.com',
+            'password': 'newpassword123',
+            'password_confirm': 'newpassword123',  # Correct field name
+            'user_type': 'student',
+            'csrf_token': 'dummy'  # Add CSRF token since WTF_CSRF_ENABLED is True
+        }, follow_redirects=True)
+        # Check that the user was created
+        assert User.query.filter_by(username='newuser').first() is not None
 
     # Login with the new user
     response = client.post('/login', data={

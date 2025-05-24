@@ -238,14 +238,10 @@
                                                         <button type="submit" class="dropdown-item text-danger">
                                                             <i class="fas fa-eye-slash"></i> Unpublish
                                                         </button>
-                                                    </form>
-                                                </li>{% else %}                                                <li>
-                                                    <form method="POST" action="{{ url_for('teacher.publish_exam', exam_id=exam.id) }}" class="d-inline">
-                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                                        <button type="submit" class="dropdown-item text-success">
-                                                            <i class="fas fa-check-circle"></i> Publish
-                                                        </button>
-                                                    </form>
+                                                    </form>                                                </li>{% else %}                                                <li>
+                                                    <a href="{{ url_for('teacher.publish_exam', exam_id=exam.id) }}" class="dropdown-item text-success">
+                                                        <i class="fas fa-check-circle"></i> Publish
+                                                    </a>
                                                 </li>
                                                 {% endif %}
                                                 <li>

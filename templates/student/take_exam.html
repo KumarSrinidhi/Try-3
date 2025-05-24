@@ -292,9 +292,9 @@
         <div class="col-md-12">
             <h1 class="display-6">{{ exam.title }}</h1>
             <p class="lead text-muted mb-4">{{ exam.description }}</p>
-        </div>
-    </div>    <form method="POST" action="{{ url_for('student.take_exam', exam_id=exam.id) }}" id="examForm" class="needs-validation" novalidate>
+        </div>    </div>    <form method="POST" action="{{ url_for('student.take_exam', exam_id=exam.id) }}" id="examForm" class="needs-validation" novalidate>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="exam_id" value="{{ exam.id }}">
         <div class="questions-container">
             {% for question in questions %}
             <div class="card shadow-sm mb-4 question-card">
@@ -686,7 +686,58 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Create a dedicated submission URL that avoids the 'undefined' path issue
             const currentPath = window.location.pathname;
-            const examId = currentPath.split('/').filter(part => part)[2]; // Get the exam ID from the path
+            let examId;
+            
+            // Extract exam ID from various possible paths
+            if (currentPath.includes('/exams/')) {
+                // Try to get exam ID from URL path
+                const pathSegments = currentPath.split('/').filter(part => part);
+                // Find the segment index after 'exams'
+                const examsIndex = pathSegments.findIndex(segment => segment === 'exams');
+                if (examsIndex !== -1 && pathSegments.length > examsIndex + 1) {
+                    examId = pathSegments[examsIndex + 1];
+                }
+            }
+            
+            // Fallback: try to get from the form action URL
+            if (!examId && examForm.action) {
+                const actionUrl = new URL(examForm.action, window.location.origin);
+                const actionPath = actionUrl.pathname;
+                if (actionPath.includes('/exams/')) {
+                    const actionSegments = actionPath.split('/').filter(part => part);
+                    const examsIndex = actionSegments.findIndex(segment => segment === 'exams');
+                    if (examsIndex !== -1 && actionSegments.length > examsIndex + 1) {
+                        examId = actionSegments[examsIndex + 1];
+                    }
+                }
+            }
+            
+            // Final fallback: try to extract from hidden inputs
+            if (!examId) {
+                // Try to find a hidden input with exam_id in the form
+                const examIdInput = document.querySelector('input[name="exam_id"]');
+                if (examIdInput) {
+                    examId = examIdInput.value;
+                }
+                
+                // Try to get it from any answer field name
+                if (!examId) {
+                    const answerInput = document.querySelector('input[name^="answer_"]');
+                    if (answerInput) {
+                        const inputNameParts = answerInput.name.split('_');
+                        if (inputNameParts.length > 1) {
+                            // We know the question ID, not the exam ID, so we can log and use it for debugging
+                            console.log('Found question ID from input:', inputNameParts[1]);
+                        }
+                    }
+                }
+            }
+            
+            if (!examId) {
+                console.error('Could not determine exam ID for submission URL');
+                throw new Error('Could not determine exam ID for submission URL');
+            }
+            
             const submitUrl = `/student/exams/${examId}/submit`;
             console.log('Submitting to URL:', submitUrl);
             

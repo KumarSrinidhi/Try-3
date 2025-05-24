@@ -191,8 +191,7 @@ class ExamAttempt(db.Model):
         db.Index('idx_student_grading', 'student_id', 'is_graded'),
         db.Index('idx_verification', 'verification_status'),
         db.Index('idx_security', 'warning_count'),
-        db.UniqueConstraint('exam_id', 'student_id', 'answer_version', name='uq_attempt_version')
-    )
+        db.UniqueConstraint('exam_id', 'student_id', 'answer_version', name='uq_attempt_version')    )
     
     def calculate_score(self):
         """Calculate the total score for this attempt"""
@@ -208,31 +207,36 @@ class ExamAttempt(db.Model):
                     Question.points
                 ).join(Question).filter(
                     Answer.attempt_id == self.id
-                ).all()                for is_correct, points in answers_with_points:
+                ).all()
+                
+                for is_correct, points in answers_with_points:
                     if is_correct:
                         earned_points += points
-                  # Calculate percentage with proper decimal handling
+                
+                # Calculate percentage with proper decimal handling
                 percentage = round((earned_points / total_points * 100), 2) if total_points > 0 else 0
                 
                 # Check if we need to apply auto-grading for MCQ questions
                 if self.is_completed and not self.is_graded:
-                    # Auto-grade MCQ questions that haven't been graded yet
-                    mcq_answers = db.session.query(Answer).join(Question).filter(
-                        Answer.attempt_id == self.id,
-                        Question.question_type == 'mcq',
-                        Answer.is_correct.is_(None)  # Only grade ungraded answers
-                    ).all()
-                    
-                    for answer in mcq_answers:
-                        # For MCQ, check if selected option is correct
-                        selected_option = answer.selected_option
-                        if selected_option:
-                            correct_option = db.session.query(QuestionOption).filter(
-                                QuestionOption.question_id == answer.question_id,
-                                QuestionOption.is_correct == True
-                            ).first()
-                            
-                            answer.is_correct = (selected_option.id == correct_option.id) if correct_option else False
+                    # Use no_autoflush to avoid premature flush and DB lock
+                    with db.session.no_autoflush:
+                        # Auto-grade MCQ questions that haven't been graded yet
+                        mcq_answers = db.session.query(Answer).join(Question).filter(
+                            Answer.attempt_id == self.id,
+                            Question.question_type == 'mcq',
+                            Answer.is_correct.is_(None)  # Only grade ungraded answers
+                        ).all()
+                        
+                        for answer in mcq_answers:
+                            # For MCQ, check if selected option is correct
+                            selected_option = answer.selected_option
+                            if selected_option:
+                                correct_option = db.session.query(QuestionOption).filter(
+                                    QuestionOption.question_id == answer.question_id,
+                                    QuestionOption.is_correct == True
+                                ).first()
+                                
+                                answer.is_correct = (selected_option.id == correct_option.id) if correct_option else False
                 
                 return {
                     'earned': earned_points,
@@ -254,7 +258,8 @@ class ExamAttempt(db.Model):
             Question.question_type != 'mcq',
             Answer.is_correct.is_(None)
         ).first() is not None
-      def validate_submission(self, submission_time, client_time=None):
+    
+    def validate_submission(self, submission_time, client_time=None):
         """
         Validate a submission attempt with comprehensive checks
         Returns (is_valid, message)

@@ -6,7 +6,8 @@ from app.models import db, User, Exam, Question
 from config import Config
 
 class TestConfig(Config):
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    # Use a separate test database
+    SQLALCHEMY_DATABASE_URI = 'mysql+mysqlconnector://root:852456@localhost/exam_platform_test'
     WTF_CSRF_ENABLED = False
     LOGIN_DISABLED = True
     TESTING = True
@@ -15,8 +16,12 @@ class TestConfig(Config):
 def app():
     app = create_app(TestConfig)
     with app.app_context():
+        # Drop all tables first to ensure clean state
+        db.drop_all()
+        # Create all tables
         db.create_all()
         yield app
+        # Cleanup after tests
         db.session.remove()
         db.drop_all()
 

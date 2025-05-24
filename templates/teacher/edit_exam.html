@@ -3,16 +3,12 @@
 {% block title %}Edit Exam - {{ exam.title }}{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-md-8">
+<div class="row">    <div class="col-md-8">
         <h1>Edit Exam: {{ exam.title }}</h1>
         <p class="lead">Add and manage questions for this exam.</p>
     </div>
     <div class="col-md-4 text-end">        {% if not exam.is_published %}
-            <form method="POST" action="{{ url_for('teacher.publish_exam', exam_id=exam.id) }}" class="d-inline">
-                {{ form.hidden_tag() }}
-                <button type="submit" class="btn btn-success">Publish Exam</button>
-            </form>
+            <a href="{{ url_for('teacher.publish_exam', exam_id=exam.id) }}" class="btn btn-success">Publish Exam</a>
         {% else %}
             <span class="badge bg-success fs-6 p-2">Published</span>
         {% endif %}

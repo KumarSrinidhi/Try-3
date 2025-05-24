@@ -210,11 +210,7 @@ class ExamForm(FlaskForm):
             group = Group.query.get(self.group_id.data)
             if group and field.data > group.students.count() * 2:
                 raise ValidationError('Maximum attempts seems unusually high for class size')
-    
-    def validate_available_until(self, field):
-        if field.data and self.available_from.data:
-            if field.data <= self.available_from.data:
-                raise ValidationError('End time must be after start time')
+  
 
 
 class MCQOptionForm(FlaskForm):

@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, desc
 from sqlalchemy.sql import case
 from functools import wraps
+import logging
 
 from app.models import (
     db, User, Exam, Question, QuestionOption, ExamAttempt, 
@@ -27,16 +28,18 @@ main_bp = Blueprint('main', __name__)
 teacher_bp = Blueprint('teacher', __name__, url_prefix='/teacher')
 student_bp = Blueprint('student', __name__, url_prefix='/student')
 
+logger = logging.getLogger(__name__)
 
 # Helper function to check if exam time has expired
 def check_time_expired(attempt):
     """Check if the exam time has expired for an attempt."""
     if not attempt or not attempt.started_at or not attempt.exam:
         return True
-        
-    if not attempt.exam.time_limit_minutes:  # If no duration set, exam doesn't expire
+    
+    # Use the correct field for duration
+    if not getattr(attempt.exam, 'time_limit_minutes', None):  # If no duration set, exam doesn't expire
         return False
-        
+    
     time_limit = attempt.started_at + timedelta(minutes=attempt.exam.time_limit_minutes)
     return datetime.utcnow() > time_limit
 
@@ -45,10 +48,10 @@ def validate_submission_time(attempt, submission_time):
     if not attempt or not attempt.started_at or not attempt.exam:
         return False
         
-    if not attempt.exam.time_limit_minutes:  # If no duration set, submission is always valid
+    if not attempt.exam.duration:  # If no duration set, submission is always valid
         return True
         
-    time_limit = attempt.started_at + timedelta(minutes=attempt.exam.time_limit_minutes)
+    time_limit = attempt.started_at + timedelta(minutes=attempt.exam.duration)
     grace_period = timedelta(minutes=1)  # 1 minute grace period for network delays
     
     return submission_time <= (time_limit + grace_period)
@@ -321,11 +324,14 @@ def delete_question(exam_id, question_id):
     return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
 
 
-@teacher_bp.route('/exams/<int:exam_id>/publish', methods=['POST'])
+@teacher_bp.route('/exams/<int:exam_id>/publish', methods=['GET', 'POST'])
 @login_required
 @teacher_required
 def publish_exam(exam_id):
-    exam = Exam.query.get_or_404(exam_id)
+    from app.security import verify_exam_owner
+    from app.forms import TakeExamForm
+    
+    exam = verify_exam_owner(exam_id)
     
     if exam.creator_id != current_user.id:
         abort(403)
@@ -334,6 +340,13 @@ def publish_exam(exam_id):
         flash('Exam must be assigned to a class before publishing.', 'warning')
         return redirect(url_for('teacher.edit_exam', exam_id=exam_id))
     
+    form = TakeExamForm()
+    
+    # If this is a GET request or the form hasn't been confirmed yet
+    if request.method == 'GET' or not request.form.get('confirm'):
+        return render_template('teacher/confirm_publish.html', exam=exam, form=form)
+    
+    # If this is a confirmed POST request
     was_already_published = exam.is_published
     exam.is_published = True
     db.session.commit()
@@ -424,59 +437,29 @@ def view_exam_attempts(exam_id):
 def grade_attempt(attempt_id):
     attempt = ExamAttempt.query.get_or_404(attempt_id)
     exam = attempt.exam
-    
+
     if exam.creator_id != current_user.id:
         abort(403)
-    
+
     answers = Answer.query.filter_by(attempt_id=attempt_id).all()
-    
+
+    # Create a main form for CSRF protection
+    grading_form = GradeAnswerForm(prefix='main')
+
     grading_forms = {}
     for answer in answers:
         if answer.question.question_type != 'mcq':
             form = GradeAnswerForm(prefix=f'answer_{answer.id}')
             form.points_awarded.default = answer.question.points if answer.is_correct else 0
             grading_forms[answer.id] = form
-    
-    if request.method == 'POST':
-        try:
-            for answer in answers:
-                if answer.question.question_type != 'mcq' and answer.id in grading_forms:
-                    form = grading_forms[answer.id]
-                    if form.validate_on_submit():
-                        answer.is_correct = form.is_correct.data
-                        
-                        max_points = answer.question.points
-                        points = min(form.points_awarded.data, max_points)
-                        
-                        if 'feedback_' + str(answer.id) in request.form:
-                            answer.teacher_feedback = request.form['feedback_' + str(answer.id)]
-            
-            attempt.is_graded = True
-            db.session.commit()
-            
-            notify_exam_graded(attempt.id)
-            
-            flash('Grading completed successfully!', 'success')
-            return redirect(url_for('teacher.view_exam_attempts', exam_id=exam.id))
-        
-        except Exception as e:
-            db.session.rollback()
-            flash('Error while grading: ' + str(e), 'danger')
-            print(f"Grading error: {str(e)}")
-    else:
-        for answer in answers:
-            if answer.question.question_type != 'mcq' and answer.id in grading_forms:
-                form = grading_forms[answer.id]
-                form.is_correct.data = answer.is_correct
-                form.points_awarded.data = answer.question.points if answer.is_correct else 0
-    
+
     return render_template(
         'teacher/grade_attempt.html',
         attempt=attempt,
         exam=exam,
         answers=answers,
         grading_forms=grading_forms,
-        student=User.query.get(attempt.student_id)
+        grading_form=grading_form  # Add the main form for CSRF protection
     )
 
 
@@ -484,79 +467,128 @@ def grade_attempt(attempt_id):
 @login_required
 @teacher_required
 def exam_analytics(exam_id):
-    exam = Exam.query.get_or_404(exam_id)
+    """Generate analytics for an exam with optimized database queries"""
+    from sqlalchemy.orm import joinedload
+    from sqlalchemy import func, case
+    from app.security import verify_exam_owner, log_security_event
     
-    if exam.creator_id != current_user.id:
-        abort(403)
-    
-    attempts = ExamAttempt.query.filter_by(exam_id=exam_id, is_completed=True).all()
-    
-    if not attempts:
-        flash('No attempts have been made on this exam yet.', 'info')
+    try:
+        # Start a transaction to ensure consistent data
+        with db.session.begin():
+            # Verify ownership and log access
+            exam = verify_exam_owner(exam_id)
+            log_security_event('ANALYTICS_ACCESS', f'Teacher {current_user.id} viewed analytics for exam {exam_id}')
+            
+            # Get all data needed in a single efficient query
+            attempts_data = db.session.query(
+                ExamAttempt,
+                User.username,
+                ExamAttempt.score,
+                ExamAttempt.completed_at,
+                ExamAttempt.started_at
+            ).join(
+                User, ExamAttempt.student_id == User.id
+            ).filter(
+                ExamAttempt.exam_id == exam_id,
+                ExamAttempt.is_completed == True
+            ).all()
+            
+            if not attempts_data:
+                flash('No completed attempts for this exam yet.', 'info')
+                return redirect(url_for('teacher.view_exam', exam_id=exam_id))
+            
+            # Initialize analytics
+            analytics = {
+                'total_attempts': len(attempts_data),
+                'avg_score': 0,
+                'highest_score': 0,
+                'lowest_score': 100,
+                'question_stats': {},
+                'completion_times': []
+            }
+            
+            # Get question performance data in one efficient query
+            question_stats = db.session.query(
+                Question.id,
+                Question.question_text,
+                Question.points,
+                Question.question_type,
+                func.count(Answer.id).label('answer_count'),
+                func.sum(case([(Answer.is_correct == True, 1)], else_=0)).label('correct_count')
+            ).outerjoin(
+                Answer, Answer.question_id == Question.id
+            ).filter(
+                Question.exam_id == exam_id
+            ).group_by(
+                Question.id
+            ).all()
+            
+            # Process question statistics
+            for q_id, q_text, points, q_type, answer_count, correct_count in question_stats:
+                percent_correct = (correct_count / answer_count * 100) if answer_count > 0 else 0
+                analytics['question_stats'][q_id] = {
+                    'id': q_id,
+                    'text': q_text,
+                    'points': points,
+                    'type': q_type,
+                    'total_answers': answer_count,
+                    'correct_answers': correct_count,
+                    'percent_correct': round(percent_correct, 1)
+                }
+            
+            # Process attempt data
+            total_score = 0
+            total_time = 0
+            min_time = float('inf')
+            max_time = 0
+            
+            for attempt, username, score, completed_at, started_at in attempts_data:
+                if score is not None:
+                    score_val = float(score)
+                    total_score += score_val
+                    analytics['highest_score'] = max(analytics['highest_score'], score_val)
+                    analytics['lowest_score'] = min(analytics['lowest_score'], score_val)
+                
+                if completed_at and started_at:
+                    completion_time = (completed_at - started_at).total_seconds() / 60.0
+                    analytics['completion_times'].append({
+                        'student': username,
+                        'minutes': round(completion_time, 1)
+                    })
+                    total_time += completion_time
+                    min_time = min(min_time, completion_time)
+                    max_time = max(max_time, completion_time)
+            
+            # Calculate averages
+            if analytics['total_attempts'] > 0:
+                analytics['avg_score'] = round(total_score / analytics['total_attempts'], 1)
+            
+            # Calculate time statistics
+            time_stats = {}
+            if analytics['completion_times']:
+                time_stats['avg'] = round(total_time / len(analytics['completion_times']), 1)
+                time_stats['min'] = round(min_time, 1)
+                time_stats['max'] = round(max_time, 1)
+            
+            # Sort questions by difficulty
+            sorted_questions = sorted(
+                analytics['question_stats'].values(),
+                key=lambda x: x['percent_correct']
+            )
+            
+            return render_template(
+                'teacher/exam_analytics.html',
+                exam=exam,
+                analytics=analytics,
+                sorted_questions=sorted_questions,
+                time_stats=time_stats
+            )
+            
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Database error in exam analytics: {str(e)}")
+        flash("Error generating analytics. Please try again.", "danger")
         return redirect(url_for('teacher.view_exam', exam_id=exam_id))
-    
-    analytics = {
-        'total_attempts': len(attempts),
-        'avg_score': 0,
-        'highest_score': 0,
-        'lowest_score': 100,
-        'question_stats': {},
-        'completion_times': []
-    }
-    
-    questions = Question.query.filter_by(exam_id=exam_id).all()
-    
-    for question in questions:
-        analytics['question_stats'][question.id] = {
-            'question': question,
-            'correct': 0,
-            'incorrect': 0,
-            'percent_correct': 0
-        }
-    
-    total_score = 0
-    for attempt in attempts:
-        score = attempt.calculate_score()
-        total_score += score['percentage']
-        
-        if score['percentage'] > analytics['highest_score']:
-            analytics['highest_score'] = score['percentage']
-        
-        if score['percentage'] < analytics['lowest_score']:
-            analytics['lowest_score'] = score['percentage']
-        
-        if attempt.completed_at and attempt.started_at:
-            time_taken = (attempt.completed_at - attempt.started_at).total_seconds() / 60
-            analytics['completion_times'].append({
-                'student': User.query.get(attempt.student_id).username,
-                'minutes': round(time_taken, 1)
-            })
-        
-        for answer in attempt.answers:
-            if answer.is_correct:
-                analytics['question_stats'][answer.question_id]['correct'] += 1
-            else:
-                analytics['question_stats'][answer.question_id]['incorrect'] += 1
-    
-    if analytics['total_attempts'] > 0:
-        analytics['avg_score'] = round(total_score / analytics['total_attempts'], 1)
-        
-        for q_id, stats in analytics['question_stats'].items():
-            total = stats['correct'] + stats['incorrect']
-            if total > 0:
-                stats['percent_correct'] = round((stats['correct'] / total) * 100, 1)
-    
-    sorted_questions = sorted(
-        [stats for stats in analytics['question_stats'].values()],
-        key=lambda x: x['percent_correct']
-    )
-    
-    return render_template(
-        'teacher/exam_analytics.html',
-        exam=exam,
-        analytics=analytics,
-        sorted_questions=sorted_questions
-    )
 
 
 @teacher_bp.route('/exams/<int:exam_id>/reviews', methods=['GET'])
@@ -723,14 +755,45 @@ def import_questions(exam_id):
     
     form = ImportQuestionsForm()
     
+    # Check if we need to show the confirmation page for replacing questions
+    if form.validate_on_submit() and form.replace_existing.data and not request.form.get('confirm_replace'):
+        # Store the file in the session temporarily
+        if form.template_file.data:
+            file_contents = form.template_file.data.read().decode('utf-8')
+            session['import_file_contents'] = file_contents
+            
+            # Count existing questions for confirmation message
+            existing_questions = Question.query.filter_by(exam_id=exam_id).count()
+            
+            return render_template(
+                'teacher/confirm_replace.html', 
+                form=form, 
+                exam=exam, 
+                existing_questions=existing_questions
+            )
+    
+    # If form is submitted and valid
     if form.validate_on_submit():
         try:
-            file_contents = form.template_file.data.read().decode('utf-8')
+            # If we're coming from the confirmation page, get the file contents from the session
+            if request.form.get('confirm_replace') and 'import_file_contents' in session:
+                file_contents = session.pop('import_file_contents')
+            else:
+                file_contents = form.template_file.data.read().decode('utf-8')
             
             from io import StringIO
             
             reader = csv.DictReader(StringIO(file_contents))
             question_count = 0
+            
+            # If replacing existing questions, delete them first
+            if form.replace_existing.data or request.form.get('replace_existing') == 'y':
+                # Delete all existing questions for this exam
+                existing_questions = Question.query.filter_by(exam_id=exam_id).all()
+                for question in existing_questions:
+                    db.session.delete(question)
+                db.session.flush()
+                flash(f'Deleted {len(existing_questions)} existing questions.', 'info')
             
             for row in reader:
                 question = Question(
@@ -997,15 +1060,11 @@ def take_exam(exam_id):
                 'redirect_url': url_for('student.view_result', attempt_id=attempt.id)
             }), 400
         
-    # Validate submission time - but be more lenient to prevent data loss
-    is_valid_time = validate_submission_time(attempt, submission_time)
-    if not is_valid_time:
-        print(f"Submission time validation failed, but proceeding with submission")
-        
-    try:
-        attempt.is_completed = True
-        attempt.submitted_at = submission_time
-        attempt.completed_at = submission_time
+        # Validate submission time
+        if not validate_submission_time(attempt, submission_time):
+            try:
+                attempt.is_completed = True
+                attempt.submitted_at = submission_time
                 # Log time expired submission
                 ActivityLog.log_activity(
                     user_id=current_user.id,
@@ -1048,22 +1107,14 @@ def take_exam(exam_id):
                     'error': 'database_error',
                     'details': error_msg
                 }), 500
-          try:
+        
+        try:
             # Save final answers
             save_answers(request.form, attempt, is_final_submission=True)
             
             # Mark attempt as completed
             attempt.is_completed = True
             attempt.submitted_at = submission_time
-            attempt.completed_at = submission_time  # Make sure completed_at is also set
-            
-            # Ensure we calculate and store the score
-            try:
-                score_data = attempt.calculate_score()
-                attempt.score = score_data['percentage']
-                attempt.is_graded = True  # Mark as graded if all questions were MCQ and auto-graded
-            except Exception as e:
-                print(f"Error calculating score during submission: {str(e)}")
             
             # Log successful submission
             ActivityLog.log_activity(
@@ -1276,90 +1327,52 @@ def mark_read(notification_id):
 @login_required
 @student_required
 def view_result(attempt_id):
-    # Get the attempt and verify it belongs to the current student
-    attempt = ExamAttempt.query.get_or_404(attempt_id)
-    
-    if attempt.student_id != current_user.id:
-        abort(403)
-      # Get all answers for this attempt
-    answers = Answer.query.filter_by(attempt_id=attempt_id).all()
-    
-    # Calculate the score for this attempt
+    """View exam attempt results with optimized data loading"""
     try:
-        score = attempt.calculate_score()
-    except Exception as e:
-        print(f"Error calculating score: {str(e)}")
-        score = {'earned': 0, 'total': 0, 'percentage': 0}
-    
-    return render_template(
-        'student/view_result.html',
-        attempt=attempt,
-        answers=answers,
-        score=score
-    )
-
-
-@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
-@login_required
-@student_required
-def review_exam(exam_id):
-    """Allow students to review and rate an exam they've completed"""
-    # Get the exam
-    exam = Exam.query.get_or_404(exam_id)
-    
-    # Verify the student has completed this exam
-    attempt = ExamAttempt.query.filter_by(
-        student_id=current_user.id,
-        exam_id=exam_id,
-        is_completed=True
-    ).first_or_404()
-    
-    # Check if student has already reviewed this exam
-    existing_review = ExamReview.query.filter_by(
-        student_id=current_user.id,
-        exam_id=exam_id
-    ).first()
-    
-    # Create form, populating with existing review if any
-    from app.forms import ExamReviewForm
-    form = ExamReviewForm(obj=existing_review)
-    
-    if form.validate_on_submit():
-        try:
-            if existing_review:
-                # Update existing review
-                existing_review.rating = form.rating.data
-                existing_review.feedback = form.feedback.data
-                existing_review.updated_at = datetime.utcnow()
-                flash('Your review has been updated.', 'success')
-            else:
-                # Create new review
-                review = ExamReview(
-                    student_id=current_user.id,
-                    exam_id=exam_id,
-                    rating=form.rating.data,
-                    feedback=form.feedback.data
-                )
-                db.session.add(review)
-                flash('Your review has been submitted. Thank you!', 'success')
-                
-                # Notify the instructor
-                notify_new_review(exam_id, current_user.id)
+        # Load all related data in a single query using joinedload
+        attempt = ExamAttempt.query.options(
+            joinedload(ExamAttempt.exam),
+            joinedload(ExamAttempt.answers).joinedload(Answer.question),
+            joinedload(ExamAttempt.answers).joinedload(Answer.selected_option)
+        ).get_or_404(attempt_id)
+        
+        # Verify ownership
+        if attempt.student_id != current_user.id:
+            logger.warning(f"Unauthorized access attempt to result {attempt_id} by user {current_user.id}")
+            abort(403)
+        
+        # Since we're using joined load, these won't trigger additional queries
+        answers = attempt.answers
+        
+        # Use a transaction to ensure consistent score calculation
+        with db.session.begin():
+            score = attempt.calculate_score()
             
-            db.session.commit()
-            
-            return redirect(url_for('student.view_result', attempt_id=attempt.id))
-            
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            flash('Error submitting review: ' + str(e), 'danger')
-    
-    return render_template(
-        'student/review_exam.html',
-        exam=exam,
-        form=form,
-        existing_review=existing_review
-    )
+            # Log the activity
+            ActivityLog.log_activity(
+                user_id=current_user.id,
+                action="view_result",
+                category="exam",
+                details={
+                    'exam_id': attempt.exam_id,
+                    'attempt_id': attempt.id,
+                    'score': float(attempt.score) if attempt.score else None,
+                    'viewed_at': datetime.utcnow().isoformat()
+                }
+            )
+        
+        return render_template(
+            'student/view_result.html',
+            attempt=attempt,
+            answers=answers,
+            score=score
+        )
+        
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Database error in view_result: {str(e)}")
+        flash("Error loading results. Please try again.", "danger")
+        return redirect(url_for('main.dashboard'))
 
 
 @main_bp.route('/admin/dashboard')
@@ -1598,27 +1611,48 @@ def view_attempt(attempt_id):
     )
 
 
-@student_bp.route('/exams/<int:exam_id>/<path:undefined_path>', methods=['GET', 'POST'])
+@student_bp.route('/exams/<int:exam_id>/review', methods=['GET', 'POST'])
 @login_required
 @student_required
-def handle_undefined_exam_path(exam_id, undefined_path):
-    """Handle undefined paths related to exams and redirect to the correct route"""
-    # Log the redirect attempt
-    print(f"Redirecting from undefined path: /student/exams/{exam_id}/{undefined_path}")
-    
-    # Check if this is likely an exam submission attempt
-    if undefined_path == 'undefined' and request.method == 'POST':
-        # Forward to the take_exam route
-        return take_exam(exam_id)
-    
-    # For GET requests or other undefined paths, redirect to the take exam page
-    return redirect(url_for('student.take_exam', exam_id=exam_id))
-
-
-@student_bp.route('/exams/<int:exam_id>/submit', methods=['POST'])
-@login_required
-@student_required
-def submit_exam(exam_id):
-    """Dedicated route for exam submissions to avoid URL issues"""
-    # Just forward to take_exam with the proper exam_id
-    return take_exam(exam_id)
+def review_exam(exam_id):
+    """Allow students to leave a review for an exam they've completed"""
+    exam = Exam.query.get_or_404(exam_id)
+    # Check if student completed this exam
+    attempt = ExamAttempt.query.filter_by(
+        student_id=current_user.id,
+        exam_id=exam_id,
+        is_completed=True
+    ).first()
+    if not attempt:
+        flash('You need to complete the exam before reviewing it.', 'warning')
+        return redirect(url_for('main.dashboard'))
+    # Get existing review if any
+    review = ExamReview.query.filter_by(
+        exam_id=exam_id,
+        student_id=current_user.id
+    ).first()
+    form = ExamReviewForm(obj=review)
+    if form.validate_on_submit():
+        try:
+            if not review:
+                review = ExamReview(
+                    exam_id=exam_id,
+                    student_id=current_user.id
+                )
+            review.rating = form.rating.data
+            review.feedback = form.feedback.data
+            if not review.id:
+                db.session.add(review)
+            db.session.commit()
+            notify_new_review(review.id)
+            flash('Your review has been submitted successfully!', 'success')
+            return redirect(url_for('student.view_result', attempt_id=attempt.id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error submitting review: {str(e)}', 'danger')
+    return render_template(
+        'student/review_exam.html',
+        exam=exam,
+        form=form,
+        is_update=review is not None
+    )
